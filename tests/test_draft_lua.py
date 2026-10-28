@@ -193,8 +193,13 @@ def test_table_adapter_runs_a_whole_draft(table_d: int) -> None:
     red = [o for o in picks if o.pos.z > 0]
     assert len(white) == 48 and len(red) == 48
     assert all(o.locked for o in picks)
-    # Picks never land in the middle strip (cube deck and discard pile live there).
-    assert min(abs(o.pos.z) for o in picks) > 3.1 / 2
+    # Each pick sits inside its owner's hidden zone (fixed geometry from the save)
+    # and the middle strip (cube deck, discard pile) stays outside both zones.
+    from lsv_duel_draft.tts_save import FOG_INNER, FOG_OUTER, FOG_WIDTH
+
+    for o in picks:
+        assert FOG_INNER < abs(o.pos.z) < FOG_OUTER and abs(o.pos.x) < FOG_WIDTH / 2
+    assert abs(g.Mock.objects["c00001"].pos.z) < FOG_INNER
 
 
 def test_table_adapter_survives_save_and_reload_mid_draft() -> None:
@@ -282,3 +287,19 @@ def test_bot_keeps_drafting_after_reload() -> None:
     g.Mock.flush()
     _human_picks(lua, 43)
     assert g.Mock.ui["statusText"].startswith("Draft complete")
+
+
+def test_debug_command_and_missing_fog_zone_is_recreated() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.Mock.objects["b00002"] = None  # Red's hidden zone is missing
+    g.onLoad("")
+    g.Mock.flush()
+    msgs = _lua_list(g.Mock.messages)
+    assert any("Red was missing" in m for m in msgs)
+    assert g.FOG_GUIDS.Red != "b00002" and g.Mock.objects[g.FOG_GUIDS.Red].value == "Red"
+
+    assert g.onChat("!draftdebug", g.Player.White) is False
+    out = " | ".join(_lua_list(g.Mock.messages))
+    assert "White fog" in out and "Red hand" in out and "MISSING" not in out

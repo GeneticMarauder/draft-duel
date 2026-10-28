@@ -15,6 +15,9 @@ function Mock.newObject(guid, kind)
   o.setPosition = function(p) o.pos = vec(p) end
   o.setRotation = function(r) o.rot = vec(r) end
   o.setScale = function(s) o.scale = vec(s) end
+  o.getScale = function() return vec(o.scale) end
+  o.getValue = function() return o.value end
+  o.setValue = function(v) o.value = v end
   o.setLock = function(b) o.locked = b end
   o.getBounds = function() return { size = { x = 2.2, y = 0.2, z = 3.1 } } end
   o.addContextMenuItem = function(label, fn) table.insert(o.menu, { label = label, fn = fn }) end
@@ -74,8 +77,8 @@ function Mock.setup(cubeSize)
   Mock.newDeck("c00001", cubeSize).pos = { x = -6, y = 1.2, z = 0 }
   Mock.newHand("a00001", "White", -19, 0)
   Mock.newHand("a00002", "Red", 19, 180)
-  Mock.newObject("b00001", "Fog")
-  Mock.newObject("b00002", "Fog")
+  Mock.newObject("b00001", "Fog").value = "White"
+  Mock.newObject("b00002", "Fog").value = "Red"
   Player = { White = makePlayer("White", "a00001"), Red = makePlayer("Red", "a00002") }
 end
 
@@ -129,3 +132,11 @@ end
 broadcastToAll = function(msg) table.insert(Mock.messages, msg) end
 broadcastToColor = function(msg, color) table.insert(Mock.messages, color .. ": " .. msg) end
 printToAll = function(msg) table.insert(Mock.messages, msg) end
+spawnObject = function(params)
+  Mock.spawned = (Mock.spawned or 0) + 1
+  local o = Mock.newObject(string.format("f%05x", Mock.spawned), params.type)
+  o.setPosition(params.position)
+  if params.scale then o.setScale(params.scale) end
+  if params.callback_function then params.callback_function(o) end
+  return o
+end

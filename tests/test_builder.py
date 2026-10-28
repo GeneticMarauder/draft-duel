@@ -82,3 +82,9 @@ def test_save_structure() -> None:
     assert zones == {("HandTrigger", "White"), ("HandTrigger", "Red"),
                      ("FogOfWarTrigger", "White"), ("FogOfWarTrigger", "Red")}
     assert "DraftCore" in save["LuaScript"] and "onStartClicked" in save["XmlUI"]
+
+    for fog in (o for o in save["ObjectStates"] if o["Name"] == "FogOfWarTrigger"):
+        t = fog["Transform"]
+        near = abs(t["posZ"]) - t["scaleZ"] / 2
+        assert near > 1.6, "the middle strip (cube deck + discard pile at z=0) is outside both hidden zones"
+        assert fog["FogReverseHiding"] is False and fog["FogSeethrough"] is False

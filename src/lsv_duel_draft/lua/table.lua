@@ -103,22 +103,72 @@ function computeLayout()
   }
 end
 
--- Moves hand zones and hidden zones to match the computed layout.
+-- Moves the hand zones to match the computed layout. Hidden zones are fixed in
+-- the save (each covers its whole half of the table) and are never moved.
 function placeZones()
   for _, color in ipairs(COLORS) do
-    local sign = sideSign(color)
     local hand = getObjectFromGUID(HAND_GUIDS[color])
     if hand then
       local p = hand.getPosition()
-      hand.setPosition({ x = 0, y = p.y, z = sign * L.handZ })
+      hand.setPosition({ x = 0, y = p.y, z = sideSign(color) * L.handZ })
     end
-    local fog = getObjectFromGUID(FOG_GUIDS[color])
-    if fog then
-      local inner = L.h / 2 + 0.4
-      local outerEdge = L.handZ - 1.5
-      fog.setPosition({ x = 0, y = L.tableY + 3, z = sign * (inner + outerEdge) / 2 })
-      fog.setScale({ x = L.halfW * 2 + 2, y = 8, z = outerEdge - inner })
+  end
+end
+
+-- Same geometry as tts_save.py; only used if a hidden zone is missing.
+FOG_INNER, FOG_OUTER, FOG_WIDTH, FOG_HEIGHT = 2.0, 40.0, 90.0, 14.0
+
+function ensureFogZones()
+  for _, color in ipairs(COLORS) do
+    if getObjectFromGUID(FOG_GUIDS[color]) == nil then
+      local sign = sideSign(color)
+      printToAll("Hidden zone for " .. color .. " was missing; recreating it.", { 1, 0.6, 0.4 })
+      spawnObject({
+        type = "FogOfWarTrigger",
+        position = { x = 0, y = FOG_HEIGHT / 2 - 1, z = sign * (FOG_INNER + FOG_OUTER) / 2 },
+        scale = { x = FOG_WIDTH, y = FOG_HEIGHT, z = FOG_OUTER - FOG_INNER },
+        sound = false,
+        callback_function = function(zone)
+          zone.setValue(color)
+          FOG_GUIDS[color] = zone.getGUID()
+        end,
+      })
     end
+  end
+end
+
+local function fmt(v)
+  if v == nil then return "nil" end
+  return string.format("(%.1f, %.1f, %.1f)", v.x, v.y, v.z)
+end
+
+-- Chat "!draftdebug": prints the numbers needed to diagnose layout/zone problems.
+function printDebug()
+  local ok, tbl = pcall(function() return Tables.getTableObject() end)
+  local tsize = ok and boundsSize(tbl) or nil
+  printToAll("table=" .. tostring(ok and tbl ~= nil) .. " size=" .. fmt(tsize), { 0.8, 0.8, 0.8 })
+  if L then
+    printToAll(string.format("card=%.2fx%.2f s=%.2f rowStart=%.1f outer=%.1f halfW=%.1f handZ=%.1f tableY=%.2f",
+      L.w, L.h, L.s, L.rowStart, L.outer, L.halfW, L.handZ, L.tableY), { 0.8, 0.8, 0.8 })
+  end
+  for _, color in ipairs(COLORS) do
+    for kind, guids in pairs({ hand = HAND_GUIDS, fog = FOG_GUIDS }) do
+      local o = getObjectFromGUID(guids[color])
+      if o then
+        local okv, value = pcall(function() return o.getValue() end)
+        printToAll(color .. " " .. kind .. ": pos=" .. fmt(o.getPosition()) .. " scale=" .. fmt(o.getScale())
+          .. " value=" .. tostring(okv and value or "?"), { 0.8, 0.8, 0.8 })
+      else
+        printToAll(color .. " " .. kind .. ": MISSING (" .. guids[color] .. ")", { 1, 0.4, 0.4 })
+      end
+    end
+  end
+end
+
+function onChat(message, player)
+  if message == "!draftdebug" then
+    printDebug()
+    return false
   end
 end
 
@@ -380,6 +430,7 @@ function onLoad(saved)
 
   Wait.frames(function()
     computeLayout()
+    ensureFogZones()
     if not draft.started then placeZones() end
     for _, id in ipairs(draft.pack) do
       local card = getObjectFromGUID(id)

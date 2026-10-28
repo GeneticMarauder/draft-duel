@@ -85,8 +85,15 @@ def build_cube_deck(cards: list[Card], sheets: dict[int, Sheet], back_url: str) 
     }
 
 
+ZONE_TINT = {"White": {"r": 1.0, "g": 1.0, "b": 1.0, "a": 0.25},
+             "Red": {"r": 0.86, "g": 0.1, "b": 0.09, "a": 0.25}}
+# Each hidden zone covers its whole half of the table, from just past the
+# middle strip (cube + discard pile at z = 0) out beyond the table edge.
+FOG_INNER, FOG_OUTER, FOG_WIDTH, FOG_HEIGHT = 2.0, 40.0, 90.0, 14.0
+
+
 def _zones() -> list[dict[str, Any]]:
-    """Hand zones and hidden zones for both seats (the Lua script refits them to the table)."""
+    """Hand zones (the Lua script moves these to fit the table) and fixed hidden zones."""
     zones = []
     for color, sign in (("White", -1), ("Red", 1)):
         zones.append({
@@ -94,9 +101,18 @@ def _zones() -> list[dict[str, Any]]:
             "Transform": _transform(z=sign * 19, y=4, ry=0 if sign < 0 else 180, sx=24, sy=5, sz=4),
         })
         zones.append({
-            "GUID": FOG_GUIDS[color], "Name": "FogOfWarTrigger", "FogColor": color,
-            "FogHidePointers": True, "FogReverseHiding": False, "FogSeethrough": False,
-            "Transform": _transform(z=sign * 10, y=4, sx=30, sy=8, sz=14),
+            "GUID": FOG_GUIDS[color], "Name": "FogOfWarTrigger",
+            "Nickname": f"{color} picks (hidden)",
+            "Transform": _transform(z=sign * (FOG_INNER + FOG_OUTER) / 2, y=FOG_HEIGHT / 2 - 1,
+                                    sx=FOG_WIDTH, sy=FOG_HEIGHT, sz=FOG_OUTER - FOG_INNER),
+            "ColorDiffuse": ZONE_TINT[color],
+            "Locked": True,
+            "Tooltip": False,
+            "Hands": False,
+            "FogColor": color,
+            "FogHidePointers": True,
+            "FogReverseHiding": False,
+            "FogSeethrough": False,
         })
     return zones
 
