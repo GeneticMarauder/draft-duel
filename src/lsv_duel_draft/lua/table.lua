@@ -11,11 +11,13 @@ PICK_ROWS = 4
 DISCARD_X = 6
 CUBE_X = -6
 LOCK_DELAY = 1.2
+BOT_DELAY = 1.0
 
 local draft = nil       -- DraftCore instance
 local cube = nil        -- the face-down cube deck
 local discardGuid = nil -- face-up discard pile (a deck once 2+ cards land)
 local L = nil           -- computed layout
+local bots = {}         -- color -> true for seats that were empty at Start Draft
 
 -- ---------------------------------------------------------------- helpers
 
@@ -242,8 +244,29 @@ function runActions(actions)
     end
   end
   updateUI()
+  promptPicker()
+end
+
+-- Tells a human picker it's their turn, or schedules the bot's pick.
+function promptPicker()
   local picker = draft:picker()
-  if picker then say(picker, "Your pick! Right-click a card in your hand > Draft this card.") end
+  if picker == nil then return end
+  if bots[picker] then
+    scheduleBotPick(picker)
+  else
+    say(picker, "Your pick! Right-click a card in your hand > Draft this card.")
+  end
+end
+
+-- Bot: takes a random card from its pack after a short pause.
+function scheduleBotPick(color)
+  local turn = draft.packNumber * 10 + draft.step
+  Wait.time(function()
+    if draft:picker() ~= color or draft.packNumber * 10 + draft.step ~= turn then return end
+    local id = draft.pack[math.random(1, #draft.pack)]
+    local actions = draft:pick(color, id)
+    if actions then runActions(actions) end
+  end, BOT_DELAY)
 end
 
 function tryPick(color, card)
@@ -290,9 +313,11 @@ function onStartClicked(player)
     say(player.color, "Sit at White or Red to start the draft.")
     return
   end
+  bots = {}
   for _, color in ipairs(COLORS) do
     if not Player[color].seated then
-      broadcastToAll(color .. " seat is empty; its packs will be dealt anyway (solo testing).", { 1, 0.8, 0.3 })
+      bots[color] = true
+      broadcastToAll(color .. " seat is empty, so a bot will draft random cards for it.", { 1, 0.8, 0.3 })
     end
   end
   local first = COLORS[math.random(1, 2)]
@@ -322,7 +347,9 @@ end
 
 function onSave()
   if draft == nil then return "" end
-  return JSON.encode({ draft = draft:serialize(), discard = discardGuid })
+  local botList = {}
+  for color in pairs(bots) do table.insert(botList, color) end
+  return JSON.encode({ draft = draft:serialize(), discard = discardGuid, bots = botList })
 end
 
 function onLoad(saved)
@@ -338,6 +365,8 @@ function onLoad(saved)
   if data and data.draft then
     draft = DraftCore.restore(data.draft)
     discardGuid = data.discard
+    bots = {}
+    for _, color in ipairs(data.bots or {}) do bots[color] = true end
   else
     draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48 })
   end
@@ -351,5 +380,6 @@ function onLoad(saved)
     end
     updateUI()
     for _, color in ipairs(COLORS) do frameCamera(color) end
+    if draft.started and not draft.finished then promptPicker() end
   end, 10)
 end

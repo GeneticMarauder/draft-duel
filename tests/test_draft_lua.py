@@ -231,3 +231,45 @@ def test_ui_xml_is_well_formed_and_unescaped() -> None:
     ids = {el.get("id") for el in root.iter()}
     assert {"statusText", "startButton", "resetViewButton", "prompt_White", "prompt_Red"} <= ids
     assert "&gt;" not in xml and "&lt;" not in xml  # TTS shows entities literally
+
+
+def _start_vs_bot(lua: LuaRuntime) -> None:
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.Player.Red.seated = False
+    g.onLoad("")
+    g.Mock.flush()
+    g.onStartClicked(g.Player.White)
+    g.Mock.flush()  # if Red starts, the bot has already picked by now
+
+
+def _human_picks(lua: LuaRuntime, n: int) -> None:
+    g = lua.globals()
+    for _ in range(n):
+        assert g.Mock.packHolder() == "White", "between human picks the pack is always back with White"
+        cards = _lua_list(g.Mock.packCards("White"))
+        assert len(cards) == 4
+        cards[0].menu[1].fn("White")
+        g.Mock.flush()
+
+
+def test_empty_seat_is_drafted_by_a_bot() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    _start_vs_bot(lua)
+    assert any("bot will draft" in m for m in _lua_list(g.Mock.messages))
+    _human_picks(lua, 48)
+    status = g.Mock.ui["statusText"]
+    assert status.startswith("Draft complete") and "Red 48/48" in status
+
+
+def test_bot_keeps_drafting_after_reload() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    _start_vs_bot(lua)
+    _human_picks(lua, 5)
+    saved = g.onSave()
+    g.onLoad(saved)
+    g.Mock.flush()
+    _human_picks(lua, 43)
+    assert g.Mock.ui["statusText"].startswith("Draft complete")
