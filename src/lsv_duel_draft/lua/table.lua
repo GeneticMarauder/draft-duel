@@ -97,7 +97,9 @@ function computeLayout()
     s = s, w = w, h = h, tableY = tableY,
     dx = w * 1.08 * s, dz = h * 1.06 * s,
     rowStart = rowStart, outer = outer, halfW = halfW,
-    handZ = outer + 2.5,
+    -- Past the table edge, like a normal TTS seat: the hand's real position
+    -- stays behind the camera, and players use TTS's on-screen hand display.
+    handZ = math.max(outer + 2.5, tableHalfD + 3.5),
   }
 end
 
@@ -279,16 +281,21 @@ function tryPick(color, card)
   runActions(actions)
 end
 
--- Points a seat's camera from behind its hand toward the middle of the table,
--- far enough out that the hand, the pick grid and the cube are all on screen.
+CAMERA_PITCH = 55
+
+-- Places a seat's camera just behind its hand zone, looking toward the middle
+-- of the table: the pick grid and the cube are in view, while the hand zone
+-- itself stays below the screen (TTS shows the hand at the bottom instead).
 function frameCamera(color)
   if L == nil or not inList(COLORS, color) or not Player[color].seated then return end
   local t = handTransform(color)
+  local target = L.rowStart * 0.5
+  local horizontal = L.handZ + 1 - target
   Player[color].lookAt({
-    position = { x = 0, y = L.tableY, z = sideSign(color) * L.handZ * 0.45 },
-    pitch = 55,
+    position = { x = 0, y = L.tableY, z = sideSign(color) * target },
+    pitch = CAMERA_PITCH,
     yaw = t and t.rotation and t.rotation.y or 0,
-    distance = L.handZ * 1.9,
+    distance = horizontal / math.cos(math.rad(CAMERA_PITCH)),
   })
 end
 

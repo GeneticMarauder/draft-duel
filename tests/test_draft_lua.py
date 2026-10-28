@@ -166,6 +166,15 @@ def test_table_adapter_runs_a_whole_draft(table_d: int) -> None:
         assert cam is not None and cam.distance > 0
     assert g.Player.White.camera.position.z < 0 < g.Player.Red.camera.position.z
 
+    import math
+
+    for color, hand_guid in (("White", "a00001"), ("Red", "a00002")):
+        hand_z = abs(g.Mock.objects[hand_guid].pos.z)
+        assert hand_z > table_d / 2, "hand zone sits past the table edge, out of the camera's view"
+        cam = g.Player[color].camera
+        cam_back = abs(cam.position.z) + cam.distance * math.cos(math.radians(cam.pitch))
+        assert cam_back > hand_z, "camera is behind its own hand zone"
+
     holder = g.Mock.packHolder()
     other = "Red" if holder == "White" else "White"
     pack = _lua_list(g.Mock.packCards(holder))
