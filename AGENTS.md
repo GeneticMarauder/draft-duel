@@ -43,4 +43,31 @@ Only add the LLM extra (`agent-core[llm]`) if this project calls an LLM at runti
 
 ## Architecture
 
+Builds a Tabletop Simulator (TTS) save for a 1v1 pick-from-4 draft of a
+CubeCobra cube (default `LSVCube`). Two halves:
+
+**Python builder** (`uv run lsv-duel-draft [--cube ID] [--push]`)
+- `sources.py` — CubeCobra mainboard ids → Scryfall `/cards/collection` → `Card`s; image
+  downloads cached in `.cache/images/`. Always sends `USER_AGENT`: Scryfall returns 400 for
+  generic/library user agents, **including the one TTS itself sends**.
+- `sheets.py` — 10x7 JPEG deck sheets (69 cards each; last slot is TTS's hidden-card slot),
+  409x570 per card so sheets stay ≤4096 px; content-hashed filenames to defeat TTS's URL cache.
+- `tts_save.py` — save JSON: `Table_RPG`, hand zones + hidden zones (fixed GUIDs), the cube deck
+  (`c00001`; DFC backs as card state 2 on sheets ≥ 51), Global Lua + XML UI.
+- `cli.py` — orchestrates; writes `dist/LSV Cube Duel Draft.json`, copies into the TTS Saves
+  folder when it exists, `--push` commits `sheets/` so raw.githubusercontent.com URLs resolve.
+- Card images are served from this public repo (`sheets/`). TTS cannot load Scryfall images directly.
+
+**Lua (in-game Global script)** — `src/lsv_duel_draft/lua/`
+- `draft_core.lua` — pure rules engine (no TTS API). Per pack, starter S / other O:
+  S picks, O picks, O picks, S picks — each from 4 cards (topped up from the cube), then the
+  3 leftovers are discarded face-up. Starter alternates; 24 packs → 48 picks each.
+- `table.lua` — TTS adapter: deals into hands, "Draft this card" context menu (and drag into
+  your own pick area), picks laid face-up in the picker's hidden zone, layout fitted to the
+  table/card bounds at load, state persisted via `onSave`/`onLoad`.
+- `ui.xml` — status bar, Start Draft button, per-seat "your pick" prompts.
+
+**Tests** — `tests/test_draft_lua.py` runs the real Lua under `lupa` against `tests/lua/tts_mock.lua`
+(a mock of the TTS API); keep TTS-specific calls inside the mock's surface or extend the mock.
+TTS Lua is MoonSharp (Lua 5.2): no `//`, no `goto`, no integer-only semantics.
 <!-- Describe this project's real pipeline / modules here as it takes shape. -->

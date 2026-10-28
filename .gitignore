@@ -25,3 +25,6 @@ build/
 Thumbs.db
 .idea/
 .vscode/
+
+# Build artifacts / caches
+.cache/

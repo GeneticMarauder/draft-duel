@@ -1,0 +1,11 @@
+<Panel id="statusPanel" rectAlignment="UpperCenter" offsetXY="0 -8" width="820" height="56" color="#000000CC">
+  <Text id="statusText" fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Loading...</Text>
+</Panel>
+<Button id="startButton" rectAlignment="UpperCenter" offsetXY="0 -72" width="240" height="44" fontSize="20"
+        textColor="#FFFFFF" colors="#2E7D32|#388E3C|#1B5E20|#555555" onClick="onStartClicked">Start Draft</Button>
+<Panel id="prompt_White" visibility="White" active="false" rectAlignment="LowerCenter" offsetXY="0 240" width="640" height="54" color="#B8860BEE">
+  <Text fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Your pick! Right-click a card in your hand > Draft this card</Text>
+</Panel>
+<Panel id="prompt_Red" visibility="Red" active="false" rectAlignment="LowerCenter" offsetXY="0 240" width="640" height="54" color="#B8860BEE">
+  <Text fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Your pick! Right-click a card in your hand > Draft this card</Text>
+</Panel>
