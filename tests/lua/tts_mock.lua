@@ -50,7 +50,8 @@ end
 local hands = {}
 
 local function makePlayer(color, handGuid)
-  local p = { color = color, seated = true, host = color == "White" }
+  local p = { color = color, seated = true, host = color == "White", camera = nil }
+  p.lookAt = function(params) p.camera = params end
   p.getHandTransform = function()
     local h = Mock.objects[handGuid]
     return { position = vec(h.pos), rotation = vec(h.rot) }

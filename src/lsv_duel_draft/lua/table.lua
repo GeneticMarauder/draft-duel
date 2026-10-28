@@ -157,14 +157,16 @@ local function attachMenu(card)
   end)
 end
 
+-- Cards go straight into the hand face-up (no flight across the table): a hand
+-- shows its cards' faces only to its owner, but keeps a face-down card face-down.
 local function dealTo(color, count)
   local t = handTransform(color)
   local yaw = seatYaw(color)
   for i = 1, count do
     local card = cube.takeObject({
       position = { x = t.position.x, y = t.position.y + 0.5 + i * 0.2, z = t.position.z },
-      rotation = { x = 0, y = yaw, z = 180 },
-      smooth = true,
+      rotation = { x = 0, y = yaw, z = 0 },
+      smooth = false,
     })
     if card then
       draft:addToPack(card.getGUID())
@@ -179,7 +181,7 @@ local function passPack(to, ids)
   for i, id in ipairs(ids) do
     local card = getObjectFromGUID(id)
     if card then
-      card.setRotation({ x = 0, y = yaw, z = 180 })
+      card.setRotation({ x = 0, y = yaw, z = 0 })
       card.setPosition({ x = t.position.x, y = t.position.y + 0.5 + i * 0.2, z = t.position.z })
     end
   end
@@ -254,7 +256,28 @@ function tryPick(color, card)
   runActions(actions)
 end
 
+-- Points a seat's camera from behind its hand toward the middle of the table,
+-- far enough out that the hand, the pick grid and the cube are all on screen.
+function frameCamera(color)
+  if L == nil or not inList(COLORS, color) or not Player[color].seated then return end
+  local t = handTransform(color)
+  Player[color].lookAt({
+    position = { x = 0, y = L.tableY, z = sideSign(color) * L.handZ * 0.45 },
+    pitch = 55,
+    yaw = t and t.rotation and t.rotation.y or 0,
+    distance = L.handZ * 1.9,
+  })
+end
+
 -- ---------------------------------------------------------------- events
+
+function onResetView(player)
+  frameCamera(player.color)
+end
+
+function onPlayerChangeColor(color)
+  Wait.frames(function() frameCamera(color) end, 5)
+end
 
 function onStartClicked(player)
   if draft == nil then return end
@@ -276,6 +299,7 @@ function onStartClicked(player)
   draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48, firstStarter = first })
   cube.shuffle()
   broadcastToAll(first .. " starts pack 1. Starting player alternates every pack.", { 0.6, 0.85, 1 })
+  for _, color in ipairs(COLORS) do frameCamera(color) end
   runActions(draft:start())
 end
 
@@ -326,5 +350,6 @@ function onLoad(saved)
       if card then attachMenu(card) end
     end
     updateUI()
+    for _, color in ipairs(COLORS) do frameCamera(color) end
   end, 10)
 end

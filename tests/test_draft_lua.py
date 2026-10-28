@@ -161,10 +161,16 @@ def test_table_adapter_runs_a_whole_draft(table_d: int) -> None:
     g.onStartClicked(g.Player.White)
     g.Mock.flush()
     assert g.Mock.ui["startButton.active"] == "false"
+    for color in ("White", "Red"):
+        cam = g.Player[color].camera
+        assert cam is not None and cam.distance > 0
+    assert g.Player.White.camera.position.z < 0 < g.Player.Red.camera.position.z
 
     holder = g.Mock.packHolder()
     other = "Red" if holder == "White" else "White"
-    card = _lua_list(g.Mock.packCards(holder))[0]
+    pack = _lua_list(g.Mock.packCards(holder))
+    assert all(c.rot.z == 0 for c in pack), "cards sit face-up in the owner's hand"
+    card = pack[0]
     card.menu[1].fn(other)  # opponent tries to draft from someone else's pack
     assert any("not yours" in m for m in _lua_list(g.Mock.messages))
 
@@ -215,3 +221,13 @@ def test_dropping_a_pack_card_on_the_table_returns_it_to_hand() -> None:
     g.onObjectDrop(holder, card)
     g.Mock.flush()
     assert len(_lua_list(g.Mock.packCards(holder))) == 4
+
+
+def test_ui_xml_is_well_formed_and_unescaped() -> None:
+    import xml.etree.ElementTree as ET
+
+    xml = (LUA_DIR / "ui.xml").read_text(encoding="utf-8")
+    root = ET.fromstring(f"<root>{xml}</root>")
+    ids = {el.get("id") for el in root.iter()}
+    assert {"statusText", "startButton", "resetViewButton", "prompt_White", "prompt_Red"} <= ids
+    assert "&gt;" not in xml and "&lt;" not in xml  # TTS shows entities literally
