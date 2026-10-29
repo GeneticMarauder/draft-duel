@@ -519,7 +519,7 @@ def test_ready_builds_library_and_sideboard_then_sets_up_the_game() -> None:
     middle = [o for o in g.Mock.objects.values()
               if o.kind in ("Deck", "Card") and abs(o.pos.z) < 2.5 and abs(o.pos.x) < 12]
     assert middle == [], "the discard pile (and any stray card) is cleared from the middle"
-    assert g.Mock.ui["statusText"].startswith("Game on!")
+    assert g.Mock.ui["statusPanel.active"] == "false", "the status bar is gone once the game starts"
     assert g.Mock.ui["deck_White.active"] == "false" and g.Mock.ui["ready_White.active"] == "false"
 
 
@@ -542,7 +542,7 @@ def test_game_state_survives_a_reload() -> None:
     saved = g.onSave()
     g.onLoad(saved)
     g.Mock.flush()
-    assert g.Mock.ui["statusText"].startswith("Game on!")
+    assert g.Mock.ui["statusPanel.active"] == "false"
     assert len([o for o in g.Mock.objects.values() if o.kind == "Counter"]) == 2, "no duplicate counters"
 
 

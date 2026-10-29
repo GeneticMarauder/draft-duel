@@ -198,6 +198,9 @@ function updateUI()
   if building then text = "Deck building: your deck is on your left, your sideboard on your right." end
   if playing then text = "Game on! " .. (firstPlayer or "?") .. " goes first. Good luck!" end
   UI.setValue("statusText", text)
+  -- Once the game starts the bar would only sit over the opponent's side;
+  -- who goes first is announced in a broadcast (and the chat log) instead.
+  UI.setAttribute("statusPanel", "active", playing and "false" or "true")
   local started = draft and draft.started
   UI.setAttribute("startButton", "active", started and "false" or "true")
   local picker = draft and draft:picker() or nil
