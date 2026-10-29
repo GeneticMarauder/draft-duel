@@ -612,10 +612,18 @@ function startGame()
     cube.setPosition({ x = -28, y = L.tableY + 1, z = 0 })
     cube.setLock(true)
   end
-  local discard = discardGuid and getObjectFromGUID(discardGuid) or nil
-  if discard then
-    discard.setPosition({ x = 28, y = L.tableY + 1, z = 0 })
-    discard.setLock(true)
+  -- The discard pile: whatever cards or piles are left in the middle strip.
+  -- (Found by position, not GUID: merging cards into a pile can give it a new GUID.)
+  local n = 0
+  for _, o in ipairs(getObjects()) do
+    if o ~= cube and (o.type == "Deck" or o.type == "Card") then
+      local p = o.getPosition()
+      if math.abs(p.z) < 2.5 and math.abs(p.x) < 12 then
+        o.setPosition({ x = 28, y = L.tableY + 1 + n * 0.5, z = 0 })
+        o.setLock(true)
+        n = n + 1
+      end
+    end
   end
   firstPlayer = COLORS[math.random(1, 2)]
   for _, color in ipairs(COLORS) do

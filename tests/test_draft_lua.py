@@ -470,6 +470,11 @@ def test_ready_refuses_a_deck_under_40_cards() -> None:
 def test_ready_builds_library_and_sideboard_then_sets_up_the_game() -> None:
     lua = make_lua(with_table=True)
     g = _finished_vs_bot(lua)
+    # TTS can re-create the discard pile under a new GUID; the setup must not depend on it.
+    pile = next(o for o in g.Mock.objects.values() if o.kind == "Deck" and abs(o.pos.z) < 1 and o.guid != "c00001")
+    g.Mock.objects[pile.guid] = None
+    pile.guid = "fresh1"
+    g.Mock.objects["fresh1"] = pile
     white = [o for o in _deck_cards(g) if o.pos.z < 0]
     _move_to_sideboard(lua, g, white[:3])  # deck 45, sideboard 3
     g.onReadyClicked(g.Player.White)
@@ -488,6 +493,9 @@ def test_ready_builds_library_and_sideboard_then_sets_up_the_game() -> None:
     assert all(c.counterValue == 20 for c in counters)
     assert not [o for o in g.Mock.objects.values() if o.kind == "Infinite_Bag"], "land bags cleared away"
     assert abs(g.Mock.objects["c00001"].pos.x) > 20, "cube moved off the play area"
+    middle = [o for o in g.Mock.objects.values()
+              if o.kind in ("Deck", "Card") and abs(o.pos.z) < 2.5 and abs(o.pos.x) < 12]
+    assert middle == [], "the discard pile (and any stray card) is cleared from the middle"
     assert g.Mock.ui["statusText"].startswith("Game on!")
     assert g.Mock.ui["deck_White.active"] == "false" and g.Mock.ui["ready_White.active"] == "false"
 
