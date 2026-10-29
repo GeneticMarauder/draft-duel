@@ -6,7 +6,7 @@ import hashlib
 import io
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 CARD_W, CARD_H = 409, 570  # 10 x 7 grid stays under 4096px, which every GPU can load
 COLS, ROWS = 10, 7
@@ -31,21 +31,10 @@ def render_sheet(images: list[Path]) -> Image.Image:
     return sheet
 
 
-def render_card_back() -> Image.Image:
-    """A plain original card back (avoids reusing the trademarked Magic back)."""
-    img = Image.new("RGB", (CARD_W * 2, CARD_H * 2), "#1b1f3a")
-    draw = ImageDraw.Draw(img)
-    w, h = img.size
-    for inset, color in ((18, "#c9a227"), (34, "#3b4378"), (40, "#c9a227")):
-        draw.rounded_rectangle((inset, inset, w - inset, h - inset), radius=40, outline=color, width=6)
-    try:
-        font = ImageFont.truetype("arialbd.ttf", 96)
-        small = ImageFont.truetype("arial.ttf", 52)
-    except OSError:
-        font = small = ImageFont.load_default()
-    draw.text((w / 2, h / 2 - 60), "LSV CUBE", font=font, fill="#c9a227", anchor="mm")
-    draw.text((w / 2, h / 2 + 60), "Duel Draft", font=small, fill="#e8e8f0", anchor="mm")
-    return img
+def card_back(path: Path) -> Image.Image:
+    """The official Magic card back (downloaded from Scryfall), as an RGB image."""
+    with Image.open(path) as img:
+        return img.convert("RGB")
 
 
 def save_hashed(img: Image.Image, out_dir: Path, prefix: str) -> str:

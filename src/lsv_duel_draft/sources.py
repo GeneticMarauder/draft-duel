@@ -18,6 +18,8 @@ from lsv_duel_draft.models import Card, Face
 USER_AGENT = "lsv-duel-draft/0.1 (+https://github.com/GeneticMarauder/lsv-duel-draft)"
 SCRYFALL_BATCH = 75
 SCRYFALL_DELAY_S = 0.12
+# The standard Magic card back (Scryfall card_back_id 0aeebaf5-...), large size.
+MAGIC_CARD_BACK = "https://backs.scryfall.io/large/0/a/0aeebaf5-8c7d-4636-9e82-8c27447861f7.jpg"
 
 
 def make_client() -> httpx.Client:

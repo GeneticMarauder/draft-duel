@@ -17,6 +17,7 @@ from pathlib import Path
 from lsv_duel_draft import sheets as sh
 from lsv_duel_draft.models import Card, Sheet
 from lsv_duel_draft.sources import (
+    MAGIC_CARD_BACK,
     download_image,
     fetch_cards,
     fetch_cube_ids,
@@ -77,7 +78,7 @@ def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: st
     for i, group in enumerate(sh.chunk([c.back.image_url for c in cards if c.back])):
         add(BACK_SHEET_BASE + i, group, f"back{i + 1:02d}")
 
-    back_name = sh.save_hashed(sh.render_card_back(), SHEETS_DIR, "cardback")
+    back_name = sh.save_hashed(sh.card_back(images[MAGIC_CARD_BACK]), SHEETS_DIR, "cardback")
     written.add(back_name)
 
     for old in SHEETS_DIR.glob("*.jpg"):
@@ -113,7 +114,7 @@ def main(argv: list[str] | None = None) -> None:
         basics = fetch_cards(client, basic_ids)
         everything = cards + basics
         urls = list(dict.fromkeys([c.front.image_url for c in everything]
-                                  + [c.back.image_url for c in everything if c.back]))
+                                  + [c.back.image_url for c in everything if c.back] + [MAGIC_CARD_BACK]))
         images: dict[str, Path] = {}
         for n, url in enumerate(urls, 1):
             images[url] = download_image(client, url, CACHE_DIR)
