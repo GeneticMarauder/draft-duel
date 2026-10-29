@@ -25,7 +25,6 @@ PICK_ROWS = 4
 PICK_GRID_Z = 9.8    -- distance of the first pick row's centre from the middle line
 HAND_Z = 20          -- hand zones (unused during the draft) sit past the table edge
 DISCARD_X = 6
-LOCK_DELAY = 1.2
 BOT_DELAY = 1.0
 CAMERA_PITCH = 60
 CAMERA_DISTANCE = 23
@@ -35,6 +34,8 @@ local cube = nil        -- the face-down cube deck
 local discardGuid = nil -- face-up discard pile (a deck once 2+ cards land)
 local L = nil           -- measured sizes
 local bots = {}         -- color -> true for seats that were empty at Start Draft
+local building = false  -- deck editor mode (after the draft)
+local deckCounts = {}   -- color -> { main, side, lands }
 
 -- ---------------------------------------------------------------- helpers
 
@@ -185,12 +186,19 @@ end
 function updateUI()
   local text = "Loading..."
   if draft then text = draft:status() end
+  if building then text = "Deck building: your deck is on your left, your sideboard on your right." end
   UI.setValue("statusText", text)
   local started = draft and draft.started
   UI.setAttribute("startButton", "active", started and "false" or "true")
   local picker = draft and draft:picker() or nil
   for _, color in ipairs(COLORS) do
-    UI.setAttribute("prompt_" .. color, "active", (picker == color) and "true" or "false")
+    UI.setAttribute("prompt_" .. color, "active", (picker == color and not building) and "true" or "false")
+    UI.setAttribute("deck_" .. color, "active", building and "true" or "false")
+    local c = deckCounts[color]
+    if c then
+      UI.setValue("deckText_" .. color, "Deck " .. c.main .. "  (" .. (c.main - c.lands) .. " spells + "
+        .. c.lands .. " lands)      Sideboard " .. c.side)
+    end
   end
 end
 
@@ -267,10 +275,7 @@ local function placePick(color, id, slot)
   card.setLock(false)
   card.setScale({ x = PICK_SCALE, y = 1, z = PICK_SCALE })
   card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
-  card.setPosition(slotPosition(color, slot))
-  Wait.time(function()
-    if card ~= nil then card.setLock(true) end
-  end, LOCK_DELAY)
+  card.setPosition(slotPosition(color, slot)) -- left unlocked: picks are yours to move
 end
 
 local function discardCards(ids)
@@ -315,7 +320,9 @@ function runActions(actions)
     elseif a.type == "discard" then
       discardCards(a.cards)
     elseif a.type == "finished" then
-      broadcastToAll("Draft complete! Your 48 picks are laid out in front of you (hidden from your opponent).", { 0.5, 1, 0.5 })
+      broadcastToAll("Draft complete! Build your deck: drag cards between your deck (left) and sideboard (right).",
+        { 0.5, 1, 0.5 })
+      startDeckBuilding()
     end
     -- "pass" needs no work of its own: layoutPack moves the pack to its new holder.
   end
@@ -357,12 +364,147 @@ end
 function frameCamera(color)
   if L == nil or not inList(COLORS, color) or not Player[color].seated then return end
   local t = Player[color].getHandTransform()
+  -- While deck building, pull back to show both the deck and sideboard columns.
+  local z, distance = PACK_ROW_Z + 1, CAMERA_DISTANCE
+  if building then z, distance = DECK_TOP_Z + 6, BUILD_CAMERA_DISTANCE end
   Player[color].lookAt({
-    position = { x = 0, y = L.feltY, z = sideSign(color) * (PACK_ROW_Z + 1) },
+    position = { x = 0, y = L.feltY, z = sideSign(color) * z },
     pitch = CAMERA_PITCH,
     yaw = t and t.rotation and t.rotation.y or 0,
-    distance = CAMERA_DISTANCE,
+    distance = distance,
   })
+end
+
+-- ---------------------------------------------------------------- deck editor
+-- After the draft each player's picks are laid out in columns by mana value
+-- (0 .. 7+, then lands). Owner's left half = deck, right half = sideboard.
+-- Dropping a card re-sorts that player's side. Bottomless bags of basic lands
+-- sit along the player's edge; a basic dropped in the sideboard is removed.
+
+DECK_SCALE = 0.8
+DECK_COLS = 9          -- mana value 0..7+, then a lands column
+DECK_COL_STEP = 1.95
+DECK_CASCADE = 0.55    -- how much of each card shows above the next one
+DECK_TOP_Z = 3.6       -- first card's centre, measured from the middle line
+MAIN_U0 = -19.6        -- deck column 0, in owner-relative x (negative = owner's left)
+SIDE_U0 = 4.0          -- sideboard column 0
+BAG_Z = 19
+BAG_U = { -8, -4, 0, 4, 8 }
+BUILD_CAMERA_DISTANCE = 38
+
+function cardInfo(obj)
+  local ok, t = pcall(function() return JSON.decode(obj.getGMNotes()) end)
+  if ok and type(t) == "table" then return t end
+  return {}
+end
+
+-- A drafted card or basic land (not the cube deck, discard pile or bags).
+function isDeckCard(obj)
+  return obj ~= nil and obj.type == "Card" and cardInfo(obj).id ~= nil
+end
+
+local function ownerU(color, x) return x * -sideSign(color) end
+local function worldX(color, u) return u * -sideSign(color) end
+
+-- Re-sorts everything on a player's side into deck and sideboard columns.
+-- forceMain puts every card in the deck (used when the draft ends).
+function layoutDeck(color, forceMain)
+  if L == nil then return end
+  local sign = sideSign(color)
+  local cols = { main = {}, side = {} }
+  for _, area in ipairs({ "main", "side" }) do
+    for c = 0, DECK_COLS - 1 do cols[area][c] = {} end
+  end
+  local counts = { main = 0, side = 0, lands = 0 }
+  for _, o in ipairs(getObjects()) do
+    if isDeckCard(o) and o.getPosition().z * sign > 1 then
+      local info = cardInfo(o)
+      local area = "side"
+      if forceMain or ownerU(color, o.getPosition().x) < 0 then area = "main" end
+      if info.basic and area == "side" then
+        o.destruct()
+      else
+        local col = math.min(math.floor(info.cmc or 0), DECK_COLS - 2)
+        if info.land then col = DECK_COLS - 1 end
+        table.insert(cols[area][col], o)
+        counts[area] = counts[area] + 1
+        if area == "main" and info.land then counts.lands = counts.lands + 1 end
+      end
+    end
+  end
+  for area, byCol in pairs(cols) do
+    local u0 = SIDE_U0
+    if area == "main" then u0 = MAIN_U0 end
+    for c = 0, DECK_COLS - 1 do
+      local list = byCol[c]
+      table.sort(list, function(a, b) return a.getName() < b.getName() end)
+      for k, o in ipairs(list) do
+        o.setInvisibleTo(othersThan(color))
+        o.setHiddenFrom({})
+        makeUnpickable(o)
+        o.setLock(false)
+        o.setScale({ x = DECK_SCALE, y = 1, z = DECK_SCALE })
+        o.setRotation({ x = 0, y = seatYaw(color), z = 0 })
+        o.setPosition({
+          x = worldX(color, u0 + c * DECK_COL_STEP),
+          y = L.feltY + 0.2 + k * 0.04,
+          z = sign * (DECK_TOP_Z + (k - 1) * DECK_CASCADE),
+        })
+      end
+    end
+  end
+  deckCounts[color] = counts
+  updateUI()
+end
+
+-- Bottomless bags of each basic land along the player's edge (spawned once).
+function spawnBasicBags(color)
+  local marker = "basic-bag:" .. color
+  for _, o in ipairs(getObjects()) do
+    if o.getGMNotes() == marker then return end
+  end
+  local sign = sideSign(color)
+  for i, land in ipairs(BASIC_LANDS) do
+    spawnObjectData({
+      data = {
+        Name = "Infinite_Bag",
+        Nickname = land.Nickname,
+        Description = "Drag a " .. land.Nickname .. " onto your deck.",
+        GMNotes = marker,
+        Transform = { posX = 0, posY = 0, posZ = 0, rotX = 0, rotY = 0, rotZ = 0,
+                      scaleX = 0.7, scaleY = 0.7, scaleZ = 0.7 },
+        ContainedObjects = { land },
+      },
+      position = { x = worldX(color, BAG_U[i] or (i * 4 - 12)), y = L.feltY + 1, z = sign * BAG_Z },
+      rotation = { x = 0, y = seatYaw(color), z = 0 },
+    })
+  end
+end
+
+function startDeckBuilding()
+  building = true
+  for _, color in ipairs(COLORS) do
+    spawnBasicBags(color)
+    layoutDeck(color, true)
+    frameCamera(color)
+  end
+  updateUI()
+end
+
+function onObjectDrop(color, obj)
+  if not building or not inList(COLORS, color) or not isDeckCard(obj) then return end
+  local sign = sideSign(color)
+  local p = obj.getPosition()
+  -- Dropped in the middle or on the opponent's side: bring it back to your deck.
+  if p.z * sign <= 1 then obj.setPosition({ x = worldX(color, -1), y = p.y, z = sign * DECK_TOP_Z }) end
+  Wait.frames(function() layoutDeck(color, false) end, 2)
+end
+
+-- Cards dropped on each other must not merge into a pile while deck building
+-- (the discard pile in the middle still stacks normally).
+function tryObjectEnterContainer(container, obj)
+  if building and isDeckCard(obj) and math.abs(obj.getPosition().z) > 1 then return false end
+  return true
 end
 
 -- ---------------------------------------------------------------- events
@@ -427,6 +569,9 @@ function onLoad(saved)
     draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48 })
   end
 
+  BASIC_LANDS = {}
+  if BASIC_LANDS_JSON then BASIC_LANDS = JSON.decode(BASIC_LANDS_JSON) or {} end
+
   Wait.frames(function()
     computeLayout()
     placeZones()
@@ -439,11 +584,18 @@ function onLoad(saved)
     for _, color in ipairs(COLORS) do
       for _, id in ipairs(draft.picks[color]) do
         local card = getObjectFromGUID(id)
-        if card then card.setInvisibleTo(othersThan(color)) end
+        if card then
+          card.setInvisibleTo(othersThan(color))
+          card.setLock(false)
+        end
       end
     end
-    updateUI()
-    for _, color in ipairs(COLORS) do frameCamera(color) end
-    if draft.started and not draft.finished then promptPicker() end
+    if draft.finished then
+      startDeckBuilding()
+    else
+      updateUI()
+      for _, color in ipairs(COLORS) do frameCamera(color) end
+      if draft.started then promptPicker() end
+    end
   end, 10)
 end

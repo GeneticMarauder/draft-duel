@@ -67,6 +67,12 @@ CubeCobra cube (default `LSVCube`). Two halves:
   right-click "Draft this card"), then the 12x4 pick grid (0.65x). Bots draft for seats empty at
   Start Draft. State persists via `onSave`/`onLoad` (buttons, menus and visibility are reapplied).
   Chat commands: `!draftdebug` (geometry dump), `!draftauto [n]` (random picks for testing).
+  **Deck editor** (after pick 96, and on reload of a finished draft): every card on a player's half
+  is sorted into columns by mana value (0..7+, then lands), cascaded so names show. Owner's left
+  half = deck, right half = sideboard; `onObjectDrop` re-sorts. Bottomless bags of the cube's basic
+  lands sit at the player's edge; a basic dropped in the sideboard is destroyed.
+  `tryObjectEnterContainer` stops cards merging into piles. Card GMNotes carry
+  `{"id","cmc","land","basic"}`; basic-land card data comes from the `BASIC_LANDS_JSON` script header.
 - `ui.xml` — status bar, Start Draft button, Reset view, per-seat "your pick" prompts.
 
 **Privacy is per card, not hidden zones.** Pack cards use `setHiddenFrom(others)` (opponent sees

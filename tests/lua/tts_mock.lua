@@ -8,8 +8,12 @@ local function vec(p)
 end
 
 function Mock.newObject(guid, kind)
-  local o = { guid = guid, kind = kind, pos = { x = 0, y = 1, z = 0 }, rot = { x = 0, y = 0, z = 0 },
+  local o = { guid = guid, kind = kind, type = kind, notes = "", name = guid,
+              pos = { x = 0, y = 1, z = 0 }, rot = { x = 0, y = 0, z = 0 },
               scale = { x = 1, y = 1, z = 1 }, menu = {}, locked = false, interactable = true }
+  o.getGMNotes = function() return o.notes end
+  o.getName = function() return o.name end
+  o.destruct = function() Mock.objects[o.guid] = nil end
   o.getGUID = function() return o.guid end
   o.getPosition = function() return vec(o.pos) end
   o.setPosition = function(p) o.pos = vec(p) end
@@ -39,6 +43,10 @@ function Mock.newDeck(guid, count)
   d.takeObject = function(params)
     local id = table.remove(d.cards, 1)
     local c = Mock.newObject(id, "Card")
+    -- Mana values 0..7 and every sixth card a land, like the real GMNotes payload.
+    local n = tonumber(id:sub(2), 16)
+    c.notes = string.format('{"id":"%s","cmc":%d,"land":%s,"basic":false}', id, n % 8, tostring(n % 6 == 0))
+    c.name = "Card " .. id
     c.setPosition(params.position)
     if params.rotation then c.setRotation(params.rotation) end
     Mock.nextCard = Mock.nextCard + 1
@@ -144,6 +152,30 @@ end
 broadcastToAll = function(msg) table.insert(Mock.messages, msg) end
 broadcastToColor = function(msg, color) table.insert(Mock.messages, color .. ": " .. msg) end
 printToAll = function(msg) table.insert(Mock.messages, msg) end
+getObjects = function()
+  local out = {}
+  for _, o in pairs(Mock.objects) do table.insert(out, o) end
+  return out
+end
+spawnObjectData = function(params)
+  Mock.spawned = (Mock.spawned or 0) + 1
+  local o = Mock.newObject(string.format("b%05x", Mock.spawned), params.data.Name)
+  o.notes = params.data.GMNotes or ""
+  o.name = params.data.Nickname or o.guid
+  o.data = params.data
+  o.setPosition(params.position)
+  return o
+end
+-- A player pulling a card out of a bottomless bag and dropping it at pos.
+function Mock.takeFromBag(bag, pos)
+  Mock.spawned = (Mock.spawned or 0) + 1
+  local land = bag.data.ContainedObjects[1]
+  local c = Mock.newObject(string.format("e%05x", Mock.spawned), "Card")
+  c.notes = land.GMNotes
+  c.name = land.Nickname
+  c.setPosition(pos)
+  return c
+end
 spawnObject = function(params)
   Mock.spawned = (Mock.spawned or 0) + 1
   local o = Mock.newObject(string.format("f%05x", Mock.spawned), params.type)

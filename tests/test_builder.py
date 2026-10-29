@@ -81,3 +81,24 @@ def test_save_structure() -> None:
     names = [(o["Name"], o.get("FogColor")) for o in save["ObjectStates"] if o["Name"] != "Deck"]
     assert names == [("HandTrigger", "White"), ("HandTrigger", "Red")], "no hidden-zone blocks on the table"
     assert "DraftCore" in save["LuaScript"] and "onStartClicked" in save["XmlUI"]
+
+
+def test_cards_carry_deck_editor_data_and_basics_reach_the_script() -> None:
+    import json
+
+    cards = [Card("a", Face("Bolt", "", "u/a"), cmc=1, is_land=False),
+             Card("b", Face("Wasteland", "", "u/b"), cmc=0, is_land=True)]
+    basics = [Card("p", Face("Plains", "", "u/p"), is_land=True)]
+    fronts, _ = assign_slots(cards + basics)
+    sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
+    save = build_save(cards, sheets, "https://h/back.jpg", "LSVCube", basics)
+
+    deck = next(o for o in save["ObjectStates"] if o["Name"] == "Deck")
+    notes = [json.loads(c["GMNotes"]) for c in deck["ContainedObjects"]]
+    assert notes == [{"id": "a", "cmc": 1, "land": False, "basic": False},
+                     {"id": "b", "cmc": 0, "land": True, "basic": False}]
+    header = save["LuaScript"].split("\n", 1)[0]
+    lands = json.loads(header.removeprefix("BASIC_LANDS_JSON = [==[").removesuffix("]==]"))
+    assert [b["Nickname"] for b in lands] == ["Plains"]
+    assert json.loads(lands[0]["GMNotes"])["basic"] is True
+    assert lands[0]["CardID"] == fronts[2].card_id, "basics sit on the sheets after the cube's cards"

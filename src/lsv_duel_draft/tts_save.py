@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
 from datetime import datetime
 from importlib import resources
 from typing import Any
@@ -41,6 +43,11 @@ def _deck_entry(sheet: Sheet, back_url: str) -> dict[str, Any]:
             "BackIsHidden": True, "UniqueBack": False, "Type": 0}
 
 
+def card_note(card: Card, basic: bool = False) -> str:
+    """GMNotes payload the deck editor reads: id, mana value, land and basic-land flags."""
+    return json.dumps({"id": card.scryfall_id, "cmc": card.cmc, "land": card.is_land, "basic": basic})
+
+
 def _card_object(guid: str, name: str, text: str, note: str, slot: SheetSlot,
                  sheets: dict[int, Sheet], back_url: str) -> dict[str, Any]:
     return {
@@ -58,16 +65,16 @@ def _card_object(guid: str, name: str, text: str, note: str, slot: SheetSlot,
     }
 
 
-def build_cube_deck(cards: list[Card], sheets: dict[int, Sheet], back_url: str) -> dict[str, Any]:
+def build_cube_deck(cards: list[Card], fronts: Sequence[SheetSlot], backs: Sequence[SheetSlot | None],
+                    sheets: dict[int, Sheet], back_url: str) -> dict[str, Any]:
     """The face-down cube deck; double-faced cards carry their back as state 2."""
-    fronts, backs = assign_slots(cards)
     contained = []
     for i, (card, front, back) in enumerate(zip(cards, fronts, backs, strict=True)):
-        obj = _card_object(f"{0xd00000 + i:06x}", card.front.name, card.front.text,
-                           card.scryfall_id, front, sheets, back_url)
+        note = card_note(card)
+        obj = _card_object(f"{0xd00000 + i:06x}", card.front.name, card.front.text, note, front, sheets, back_url)
         if card.back is not None and back is not None:
             obj["States"] = {"2": _card_object(f"{0xe00000 + i:06x}", card.back.name, card.back.text,
-                                               card.scryfall_id, back, sheets, back_url)}
+                                               note, back, sheets, back_url)}
         contained.append(obj)
     return {
         "GUID": CUBE_GUID,
@@ -84,6 +91,16 @@ def build_cube_deck(cards: list[Card], sheets: dict[int, Sheet], back_url: str) 
     }
 
 
+def basic_land_objects(basics: list[Card], slots: Sequence[SheetSlot], sheets: dict[int, Sheet],
+                       back_url: str) -> list[dict[str, Any]]:
+    """One card object per basic land, for the deck editor's bottomless land bags."""
+    return [
+        _card_object(f"{0xf00000 + i:06x}", b.front.name, b.front.text, card_note(b, basic=True),
+                     slot, sheets, back_url)
+        for i, (b, slot) in enumerate(zip(basics, slots, strict=True))
+    ]
+
+
 def _zones() -> list[dict[str, Any]]:
     """Hand zones for both seats (the Lua script moves them to fit the table).
 
@@ -97,10 +114,12 @@ def _zones() -> list[dict[str, Any]]:
     ]
 
 
-def global_lua() -> str:
-    """The Global script: rules engine followed by the table adapter."""
+def global_lua(basic_lands: list[dict[str, Any]] | None = None) -> str:
+    """The Global script: basic-land data, rules engine, then the table adapter."""
     pkg = resources.files("lsv_duel_draft") / "lua"
-    return (pkg / "draft_core.lua").read_text(encoding="utf-8") + "\n" + (pkg / "table.lua").read_text(encoding="utf-8")
+    header = f"BASIC_LANDS_JSON = [==[{json.dumps(basic_lands or [])}]==]\n"
+    return (header + (pkg / "draft_core.lua").read_text(encoding="utf-8") + "\n"
+            + (pkg / "table.lua").read_text(encoding="utf-8"))
 
 
 def global_xml() -> str:
@@ -108,8 +127,16 @@ def global_xml() -> str:
     return (resources.files("lsv_duel_draft") / "lua" / "ui.xml").read_text(encoding="utf-8")
 
 
-def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_name: str) -> dict[str, Any]:
-    """The complete save: table, zones, cube deck, scripts and UI."""
+def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_name: str,
+               basics: list[Card] | None = None) -> dict[str, Any]:
+    """The complete save: table, zones, cube deck, scripts and UI.
+
+    Basic lands share the front sheets, placed after the cube's cards.
+    """
+    basics = basics or []
+    fronts, backs = assign_slots(cards + basics)
+    n = len(cards)
+    lands = basic_land_objects(basics, fronts[n:], sheets, back_url)
     return {
         "SaveName": SAVE_NAME,
         "GameMode": SAVE_NAME,
@@ -126,8 +153,8 @@ def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_
         "Rules": "",
         "TabStates": {},
         "Hands": {"Enable": True, "DisableUnused": False, "Hiding": 0},
-        "LuaScript": global_lua(),
+        "LuaScript": global_lua(lands),
         "LuaScriptState": "",
         "XmlUI": global_xml(),
-        "ObjectStates": [*_zones(), build_cube_deck(cards, sheets, back_url)],
+        "ObjectStates": [*_zones(), build_cube_deck(cards, fronts[:n], backs[:n], sheets, back_url)],
     }

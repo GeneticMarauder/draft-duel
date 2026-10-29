@@ -107,21 +107,25 @@ def main(argv: list[str] | None = None) -> None:
 
     slug = repo_slug()
     with make_client() as client:
-        ids = fetch_cube_ids(client, args.cube)
-        print(f"{args.cube}: {len(ids)} cards")
+        ids, basic_ids = fetch_cube_ids(client, args.cube)
+        print(f"{args.cube}: {len(ids)} cards, {len(basic_ids)} basic lands")
         cards = fetch_cards(client, ids)
-        urls = list(dict.fromkeys([c.front.image_url for c in cards] + [c.back.image_url for c in cards if c.back]))
+        basics = fetch_cards(client, basic_ids)
+        everything = cards + basics
+        urls = list(dict.fromkeys([c.front.image_url for c in everything]
+                                  + [c.back.image_url for c in everything if c.back]))
         images: dict[str, Path] = {}
         for n, url in enumerate(urls, 1):
             images[url] = download_image(client, url, CACHE_DIR)
             if n % 50 == 0 or n == len(urls):
                 print(f"  images {n}/{len(urls)}")
 
-    sheets, back_url = render_all(cards, images, slug, args.branch)
+    # Basics go on the front sheets after the cube's cards (see tts_save.build_save).
+    sheets, back_url = render_all(everything, images, slug, args.branch)
     dfc = sum(1 for c in cards if c.back)
     print(f"Rendered {len(sheets)} sheets ({dfc} double-faced cards).")
 
-    save = build_save(cards, sheets, back_url, args.cube)
+    save = build_save(cards, sheets, back_url, args.cube, basics)
     DIST_DIR.mkdir(exist_ok=True)
     out = DIST_DIR / f"{SAVE_NAME}.json"
     out.write_text(json.dumps(save, indent=1, ensure_ascii=False), encoding="utf-8")

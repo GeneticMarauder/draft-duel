@@ -29,12 +29,12 @@ def make_client() -> httpx.Client:
     )
 
 
-def fetch_cube_ids(client: httpx.Client, cube_id: str) -> list[str]:
-    """Return the Scryfall ids of the cube's mainboard, in list order (printings as chosen by the cube owner)."""
+def fetch_cube_ids(client: httpx.Client, cube_id: str) -> tuple[list[str], list[str]]:
+    """Scryfall ids of the cube's mainboard and its basic lands (printings as chosen by the cube owner)."""
     resp = client.get(f"https://cubecobra.com/cube/api/cubeJSON/{cube_id}")
     resp.raise_for_status()
-    mainboard = resp.json()["cards"]["mainboard"]
-    return [c["cardID"] for c in mainboard]
+    cards = resp.json()["cards"]
+    return [c["cardID"] for c in cards["mainboard"]], [c["cardID"] for c in cards.get("basics", [])]
 
 
 def _face_text(face: dict[str, Any]) -> str:
@@ -56,18 +56,17 @@ def card_from_scryfall(data: dict[str, Any]) -> Card:
     adventure and flip cards share one image, so their faces' text is joined.
     """
     faces = data.get("card_faces") or []
+    front_type = faces[0].get("type_line", "") if faces else data.get("type_line", "")
+    common = {"scryfall_id": data["id"], "cmc": data.get("cmc", 0), "is_land": "Land" in front_type}
     if faces and "image_uris" not in data:
         front, back = faces[0], faces[1]
         return Card(
-            scryfall_id=data["id"],
             front=Face(front["name"], _face_text(front), front["image_uris"]["normal"]),
             back=Face(back["name"], _face_text(back), back["image_uris"]["normal"]),
+            **common,
         )
     text = "\n\n".join(f"{f['name']}\n{_face_text(f)}" for f in faces) if faces else _face_text(data)
-    return Card(
-        scryfall_id=data["id"],
-        front=Face(data["name"], text, data["image_uris"]["normal"]),
-    )
+    return Card(front=Face(data["name"], text, data["image_uris"]["normal"]), **common)
 
 
 def fetch_cards(client: httpx.Client, ids: list[str]) -> list[Card]:

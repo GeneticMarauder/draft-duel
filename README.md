@@ -24,7 +24,11 @@ The starting player alternates every pack. 24 packs gives each player 48 cards.
    the card you want (or right-click it → **Draft this card**). Your opponent sees only card backs.
 4. Your picks go into a grid below the pack, invisible to your opponent. The discard pile in the
    middle is open: right-click it and choose **Search** to look through it.
-5. Hold **Alt** while hovering a card for a large preview. **Reset view** (top right) re-frames your camera.
+5. When the draft ends you switch to **deck building**: your cards are sorted into columns by mana
+   value, with lands last. Your deck is on your left and your sideboard on your right; drag cards
+   between them. Drag basic lands out of the land bags along your edge; drop a basic on the
+   sideboard to remove it. The panel at the bottom shows your deck and sideboard counts.
+6. Hold **Alt** while hovering a card for a large preview. **Reset view** (top right) re-frames your camera.
 
 Testing helpers (type in chat): `!draftauto 10` makes 10 random picks for you; `!draftdebug` prints
 the table and zone geometry.

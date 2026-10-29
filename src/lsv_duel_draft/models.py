@@ -21,6 +21,8 @@ class Card:
     scryfall_id: str
     front: Face
     back: Face | None = None
+    cmc: float = 0
+    is_land: bool = False
 
 
 @dataclass(frozen=True)

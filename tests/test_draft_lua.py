@@ -33,6 +33,11 @@ def make_lua(with_table: bool = False) -> LuaRuntime:
             encode=lambda t: json.dumps(_to_py(t)),
             decode=lambda s: lua.table_from(json.loads(s), recursive=True),
         )
+        g.BASIC_LANDS_JSON = json.dumps([
+            {"Name": "Card", "Nickname": n,
+             "GMNotes": json.dumps({"id": n, "cmc": 0, "land": True, "basic": True})}
+            for n in ("Plains", "Island", "Swamp", "Mountain", "Forest")
+        ])
         lua.execute((LUA_DIR / "table.lua").read_text(encoding="utf-8"))
     return lua
 
@@ -180,22 +185,20 @@ def test_table_adapter_runs_a_whole_draft() -> None:
     assert any("not yours" in m for m in _lua_list(g.Mock.messages))
 
     _play(lua, 96)
-    assert g.Mock.ui["statusText"].startswith("Draft complete")
-    assert "White 48/48" in g.Mock.ui["statusText"] and "Red 48/48" in g.Mock.ui["statusText"]
+    assert g.Mock.ui["statusText"].startswith("Deck building")
     assert len(g.Mock.objects["c00001"].cards) == 515 - 168
 
-    picks = [o for o in g.Mock.objects.values() if o.kind == "Card" and o.scale.x == g.PICK_SCALE]
+    # When the draft ends, all 48 picks go into the deck columns (deck editor).
+    picks = _deck_cards(g)
     white = [o for o in picks if o.pos.z < 0]
     red = [o for o in picks if o.pos.z > 0]
     assert len(white) == 48 and len(red) == 48
-    assert all(o.locked for o in picks)
-    # Picks stay in the owner's pick area, clear of the middle strip (cube deck,
-    # discard pile), and each one is invisible to every seat but its owner.
+    assert g.Mock.ui["deckText_White"].startswith("Deck 48 ")
+    assert not any(o.locked for o in picks), "cards can be dragged while deck building"
     for color, mine in (("White", white), ("Red", red)):
         other = "Red" if color == "White" else "White"
         for o in mine:
-            assert g.PICK_GRID_Z - 0.01 < abs(o.pos.z) < grid_far_edge
-            assert abs(o.pos.x) < 6 * 2.2 * g.PICK_SCALE * 1.05
+            assert o.scale.x == g.DECK_SCALE
             hidden_from = set(_lua_list(o.invisibleTo))
             assert other in hidden_from and "Grey" in hidden_from and color not in hidden_from
 
@@ -216,7 +219,7 @@ def test_table_adapter_survives_save_and_reload_mid_draft() -> None:
     g.onLoad(saved)
     g.Mock.flush()
     _play(lua, 96 - 7)
-    assert g.Mock.ui["statusText"].startswith("Draft complete")
+    assert g.Mock.ui["statusText"].startswith("Deck building")
 
 
 def test_pack_is_laid_out_on_the_table_for_its_holder_only() -> None:
@@ -284,7 +287,8 @@ def test_empty_seat_is_drafted_by_a_bot() -> None:
     assert any("bot will draft" in m for m in _lua_list(g.Mock.messages))
     _human_picks(lua, 48)
     status = g.Mock.ui["statusText"]
-    assert status.startswith("Draft complete") and "Red 48/48" in status
+    assert status.startswith("Deck building")
+    assert g.Mock.ui["deckText_White"].startswith("Deck 48 ")
 
 
 def test_bot_keeps_drafting_after_reload() -> None:
@@ -296,7 +300,7 @@ def test_bot_keeps_drafting_after_reload() -> None:
     g.onLoad(saved)
     g.Mock.flush()
     _human_picks(lua, 43)
-    assert g.Mock.ui["statusText"].startswith("Draft complete")
+    assert g.Mock.ui["statusText"].startswith("Deck building")
 
 
 def test_debug_command_prints_geometry() -> None:
@@ -331,4 +335,96 @@ def test_draftauto_command_finishes_the_draft_against_a_bot() -> None:
     _start_vs_bot(lua)
     assert g.onChat("!draftauto", g.Player.White) is False
     g.Mock.flush()
-    assert g.Mock.ui["statusText"].startswith("Draft complete")
+    assert g.Mock.ui["statusText"].startswith("Deck building")
+
+
+# ------------------------------------------------------------------ deck editor
+
+
+def _deck_cards(g) -> list:
+    return [o for o in g.Mock.objects.values() if o.kind == "Card" and '"id"' in o.notes and abs(o.pos.z) > 1]
+
+
+def _finished_vs_bot(lua: LuaRuntime):
+    g = lua.globals()
+    _start_vs_bot(lua)
+    _human_picks(lua, 48)
+    return g
+
+
+def _owner_u(o) -> float:
+    """x relative to White (negative = White's left = deck side)."""
+    return o.pos.x
+
+
+def test_deck_editor_sorts_picks_into_mana_value_columns() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    white = [o for o in _deck_cards(g) if o.pos.z < 0]
+    assert all(_owner_u(o) < 0 for o in white), "every pick starts in the deck (left)"
+    by_x: dict[float, list] = {}
+    for o in white:
+        by_x.setdefault(round(o.pos.x, 2), []).append(o)
+    for column in by_x.values():
+        infos = [json.loads(o.notes) for o in column]
+        keys = {"land" if i["land"] else min(int(i["cmc"]), 7) for i in infos}
+        assert len(keys) == 1, "a column holds one mana value (or lands)"
+        zs = sorted(abs(o.pos.z) for o in column)
+        steps = [round(b - a, 2) for a, b in itertools.pairwise(zs)]
+        assert all(step == g.DECK_CASCADE for step in steps), "cards cascade so each name shows"
+    land_col = next(c for c in by_x.values() if json.loads(c[0].notes)["land"])
+    assert max(o.pos.x for o in white) == land_col[0].pos.x, "lands are the rightmost deck column"
+
+
+def test_dragging_to_the_sideboard_and_back_updates_counts() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    card = next(o for o in _deck_cards(g) if o.pos.z < 0)
+    card.setPosition(lua.table(x=10, y=2, z=-6))  # White drops it on their right: sideboard
+    g.onObjectDrop("White", card)
+    g.Mock.flush()
+    assert card.pos.x > 0 and card.pos.z < 0
+    assert g.Mock.ui["deckText_White"].startswith("Deck 47 ") and g.Mock.ui["deckText_White"].endswith("Sideboard 1")
+    card.setPosition(lua.table(x=-10, y=2, z=-6))  # and back into the deck
+    g.onObjectDrop("White", card)
+    g.Mock.flush()
+    assert g.Mock.ui["deckText_White"].startswith("Deck 48 ") and g.Mock.ui["deckText_White"].endswith("Sideboard 0")
+
+
+def test_basic_land_bags_add_and_remove_lands() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    bags = [o for o in g.Mock.objects.values() if o.kind == "Infinite_Bag"]
+    white_bags = [b for b in bags if b.notes == "basic-bag:White"]
+    assert len(bags) == 10 and len(white_bags) == 5 and all(b.pos.z < 0 for b in white_bags)
+    lands_before = int(g.Mock.ui["deckText_White"].split("+ ")[1].split(" lands")[0])
+
+    plains = g.Mock.takeFromBag(white_bags[0], lua.table(x=-5, y=2, z=-8))
+    g.onObjectDrop("White", plains)
+    g.Mock.flush()
+    assert g.Mock.ui["deckText_White"].startswith("Deck 49 ")
+    assert f"+ {lands_before + 1} lands" in g.Mock.ui["deckText_White"]
+    assert "Red" in set(_lua_list(plains.invisibleTo))
+
+    plains.setPosition(lua.table(x=10, y=2, z=-8))  # a basic dropped on the sideboard is removed
+    g.onObjectDrop("White", plains)
+    g.Mock.flush()
+    assert g.Mock.objects[plains.guid] is None
+    assert g.Mock.ui["deckText_White"].startswith("Deck 48 ") and g.Mock.ui["deckText_White"].endswith("Sideboard 0")
+
+
+def test_cards_do_not_merge_into_piles_while_deck_building() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    a, b = [o for o in _deck_cards(g) if o.pos.z < 0][:2]
+    assert g.tryObjectEnterContainer(b, a) is False
+
+
+def test_deck_editor_resumes_after_reload() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    saved = g.onSave()
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert g.Mock.ui["statusText"].startswith("Deck building")
+    assert len([o for o in g.Mock.objects.values() if o.kind == "Infinite_Bag"]) == 10, "bags are not duplicated"
