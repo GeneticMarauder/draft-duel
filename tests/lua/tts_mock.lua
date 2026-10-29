@@ -28,6 +28,8 @@ function Mock.newObject(guid, kind)
   o.createButton = function(params) table.insert(o.buttons, params) end
   o.clearButtons = function() o.buttons = {} end
   o.setLock = function(b) o.locked = b end
+  o.setVelocity = function(v) o.velocity = vec(v) end
+  o.setAngularVelocity = function(v) o.angularVelocity = vec(v) end
   o.getBounds = function() return { size = { x = 2.2, y = 0.2, z = 3.1 } } end
   o.addContextMenuItem = function(label, fn) table.insert(o.menu, { label = label, fn = fn }) end
   o.clearContextMenu = function() o.menu = {} end

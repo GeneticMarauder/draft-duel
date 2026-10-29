@@ -428,3 +428,18 @@ def test_deck_editor_resumes_after_reload() -> None:
     g.Mock.flush()
     assert g.Mock.ui["statusText"].startswith("Deck building")
     assert len([o for o in g.Mock.objects.values() if o.kind == "Infinite_Bag"]) == 10, "bags are not duplicated"
+
+
+def test_deck_editor_cards_float_flat_in_cascade_order() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    white = [o for o in _deck_cards(g) if o.pos.z < 0]
+    assert all(o.use_gravity is False and o.rot.x == 0 and o.rot.z == 0 for o in white)
+    by_x: dict[float, list] = {}
+    for o in white:
+        by_x.setdefault(round(o.pos.x, 2), []).append(o)
+    for column in by_x.values():
+        # Each card nearer the player (further down the cascade) sits higher, so it is drawn on top.
+        ordered = sorted(column, key=lambda o: abs(o.pos.z))
+        heights = [o.pos.y for o in ordered]
+        assert heights == sorted(heights) and len(set(heights)) == len(heights)

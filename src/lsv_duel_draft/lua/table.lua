@@ -385,6 +385,7 @@ DECK_SCALE = 0.8
 DECK_COLS = 9          -- mana value 0..7+, then a lands column
 DECK_COL_STEP = 1.95
 DECK_CASCADE = 0.55    -- how much of each card shows above the next one
+DECK_LAYER = 0.06      -- height step between cascaded cards (more than a card is thick)
 DECK_TOP_Z = 3.6       -- first card's centre, measured from the middle line
 MAIN_U0 = -19.6        -- deck column 0, in owner-relative x (negative = owner's left)
 SIDE_U0 = 4.0          -- sideboard column 0
@@ -442,14 +443,20 @@ function layoutDeck(color, forceMain)
         o.setInvisibleTo(othersThan(color))
         o.setHiddenFrom({})
         makeUnpickable(o)
+        -- Gravity off: a cascaded card would otherwise rest half on the card
+        -- before it and half on the felt, tilting or sliding underneath it.
+        -- Each card floats flat, a step above the one before, and stays draggable.
         o.setLock(false)
+        o.use_gravity = false
         o.setScale({ x = DECK_SCALE, y = 1, z = DECK_SCALE })
         o.setRotation({ x = 0, y = seatYaw(color), z = 0 })
         o.setPosition({
           x = worldX(color, u0 + c * DECK_COL_STEP),
-          y = L.feltY + 0.2 + k * 0.04,
+          y = L.feltY + 0.1 + k * DECK_LAYER,
           z = sign * (DECK_TOP_Z + (k - 1) * DECK_CASCADE),
         })
+        o.setVelocity({ x = 0, y = 0, z = 0 })
+        o.setAngularVelocity({ x = 0, y = 0, z = 0 })
       end
     end
   end
