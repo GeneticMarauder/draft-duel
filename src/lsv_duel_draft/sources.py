@@ -20,6 +20,8 @@ SCRYFALL_BATCH = 75
 SCRYFALL_DELAY_S = 0.12
 # The standard Magic card back (Scryfall card_back_id 0aeebaf5-...), large size.
 MAGIC_CARD_BACK = "https://backs.scryfall.io/large/0/a/0aeebaf5-8c7d-4636-9e82-8c27447861f7.jpg"
+# Cards we play in place of ones on the CubeCobra list: cube card name -> replacement name.
+CARD_SWAPS = {"Cogwork Librarian": "Booster Tutor"}
 
 
 def make_client() -> httpx.Client:
@@ -89,6 +91,28 @@ def fetch_cards(client: httpx.Client, ids: list[str]) -> list[Card]:
             by_id[data["id"]] = card_from_scryfall(data)
         time.sleep(SCRYFALL_DELAY_S)
     return [by_id[i] for i in ids]
+
+
+def fetch_cards_by_name(client: httpx.Client, names: list[str]) -> dict[str, Card]:
+    """Look up cards by exact name; returns them keyed by the requested name."""
+    if not names:
+        return {}
+    resp = client.post("https://api.scryfall.com/cards/collection",
+                       json={"identifiers": [{"name": n} for n in names]})
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("not_found"):
+        raise RuntimeError(f"Scryfall could not find: {body['not_found']}")
+    time.sleep(SCRYFALL_DELAY_S)
+    by_name = {c.front.name: c for c in map(card_from_scryfall, body["data"])}
+    return {n: by_name[n] for n in names}
+
+
+def swap_cards(cards: list[Card], swaps: dict[str, Card]) -> tuple[list[Card], list[str]]:
+    """Replace cube cards by name (same position in the list); also returns swap names not in the cube."""
+    out = [swaps.get(c.front.name, c) for c in cards]
+    present = {c.front.name for c in cards}
+    return out, [name for name in swaps if name not in present]
 
 
 def download_image(client: httpx.Client, url: str, cache_dir: Path) -> Path:

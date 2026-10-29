@@ -19,6 +19,7 @@ function Mock.newObject(guid, kind)
   o.getPosition = function() return vec(o.pos) end
   o.setPosition = function(p) o.pos = vec(p) end
   o.setRotation = function(r) o.rot = vec(r) end
+  o.getRotation = function() return vec(o.rot) end
   o.setScale = function(s) o.scale = vec(s) end
   o.getScale = function() return vec(o.scale) end
   o.getValue = function() return o.value end
@@ -43,6 +44,11 @@ function Mock.newDeck(guid, count)
   d.cards = {}
   for i = 1, count do table.insert(d.cards, string.format("d%05x", i)) end
   d.shuffle = function() end
+  d.getQuantity = function() return #d.cards end
+  d.putObject = function(obj)
+    table.insert(d.cards, obj.guid)
+    Mock.objects[obj.guid] = nil
+  end
   d.takeObject = function(params)
     local id = table.remove(d.cards, 1)
     local c = Mock.newObject(id, "Card")

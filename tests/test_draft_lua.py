@@ -701,3 +701,71 @@ def test_no_token_menus_before_the_game_and_they_return_after_reload() -> None:
     g.onLoad(saved)
     g.Mock.flush()
     assert [item.label for item in _lua_list(card.menu)] == ["Create The Monarch"]
+
+
+# ------------------------------------------------------------------ booster tutor
+
+
+def _booster(g) -> list:
+    return sorted((o for o in g.Mock.objects.values() if o.kind == "Card" and len(o.buttons) > 0),
+                  key=lambda o: o.pos.x)
+
+
+def test_booster_tutor_opens_15_cards_and_puts_the_choice_in_hand() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    cube = g.Mock.objects["c00001"]
+    before = len(cube.cards)
+    tutor = _maker(lua, "bt0001", "booster-tutor-id", x=0, z=-19)  # in White's hand
+    tutor.name = "Booster Tutor"
+    g.onObjectSpawn(tutor)
+    g.Mock.flush()
+    assert [item.label for item in _lua_list(tutor.menu)] == ["Open a booster"]
+
+    tutor.menu[1].fn("White")
+    g.Mock.flush()
+    pack = _booster(g)
+    assert len(pack) == 15 and len(cube.cards) == before - 15
+    assert all(c.locked and c.rot.z == 0 and abs(c.pos.z) < 0.01 for c in pack), "face-up row across the middle"
+    assert all(b.pos.x - a.pos.x > 2.2 * g.BOOSTER_SCALE for a, b in itertools.pairwise(pack)), "no overlap"
+    assert all(not c.hiddenFrom or len(_lua_list(c.hiddenFrom)) == 0 for c in pack), "revealed to everyone"
+    assert [item.label for item in _lua_list(pack[0].menu)] == ["Take this card"], "no token menu on pack cards"
+
+    tutor.menu[1].fn("Red")  # only one booster at a time
+    pack[3].menu[1].fn("Red")  # and only the opener takes from it
+    g.Mock.flush()
+    assert len(_booster(g)) == 15
+
+    chosen = pack[3]
+    g.onBoosterTake(chosen, "White")
+    g.Mock.flush()
+    hand = {o.guid for o in _lua_list(g.Player.White.getHandObjects())}
+    assert chosen.guid in hand and not chosen.locked and chosen.scale.x == 1
+    assert len(cube.cards) == before - 1, "the other 14 go back into the cube"
+    assert _booster(g) == [] and any("takes" in m for m in _lua_list(g.Mock.messages))
+
+    tutor.menu[1].fn("Red")  # a new booster can be opened afterwards
+    g.Mock.flush()
+    assert len(_booster(g)) == 15
+
+
+def test_open_booster_survives_a_reload() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    tutor = _maker(lua, "bt0002", "booster-tutor-id", x=0, z=-6)
+    tutor.name = "Booster Tutor"
+    g.onObjectSpawn(tutor)
+    g.Mock.flush()
+    tutor.menu[1].fn("Red")
+    g.Mock.flush()
+    saved = g.onSave()
+    for o in g.Mock.objects.values():  # a reload drops buttons and menus
+        o.buttons = lua.table()
+        o.menu = lua.table()
+    g.onLoad(saved)
+    g.Mock.flush()
+    pack = _booster(g)
+    assert len(pack) == 15
+    pack[0].menu[1].fn("Red")
+    g.Mock.flush()
+    assert pack[0].guid in {o.guid for o in _lua_list(g.Player.Red.getHandObjects())}

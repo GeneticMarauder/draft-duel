@@ -155,3 +155,13 @@ def test_tokens_reach_the_script_with_their_own_sheet() -> None:
     assert treasure["Nickname"] == "Treasure" and json.loads(treasure["GMNotes"]) == {"token": "Treasure"}
     assert list(treasure["CustomDeck"]) == [str(TOKEN_SHEET_BASE)]
     assert "States" in data["tokens"]["Day // Night"], "double-faced tokens can be flipped"
+
+
+def test_swap_cards_replaces_by_name_in_place() -> None:
+    from lsv_duel_draft.sources import swap_cards
+
+    cards = [Card("a", Face("Bolt", "", "u/a")), Card("c", Face("Cogwork Librarian", "", "u/c"))]
+    tutor = Card("t", Face("Booster Tutor", "", "u/t"))
+    swapped, absent = swap_cards(cards, {"Cogwork Librarian": tutor, "Not Here": tutor})
+    assert [c.front.name for c in swapped] == ["Bolt", "Booster Tutor"]
+    assert absent == ["Not Here"]

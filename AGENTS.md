@@ -48,7 +48,8 @@ CubeCobra cube (default `LSVCube`). Two halves:
 
 **Python builder** (`uv run lsv-duel-draft [--cube ID] [--push]`)
 - `sources.py` — CubeCobra mainboard ids → Scryfall `/cards/collection` → `Card`s; image
-  downloads cached in `.cache/images/`. Always sends `USER_AGENT`: Scryfall returns 400 for
+  downloads cached in `.cache/images/`. `CARD_SWAPS` replaces cube cards by name with cards we play
+  instead (Cogwork Librarian → Booster Tutor); the build prints each swap. Always sends `USER_AGENT`: Scryfall returns 400 for
   generic/library user agents, **including the one TTS itself sends**.
 - `sheets.py` — 10x7 JPEG deck sheets (69 cards each; last slot is TTS's hidden-card slot),
   409x570 per card so sheets stay ≤4096 px; content-hashed filenames to defeat TTS's URL cache.
@@ -89,7 +90,12 @@ CubeCobra cube (default `LSVCube`). Two halves:
   right (a card in hand → `TOKEN_HOME_*` on the clicker's side). `UNIQUE_TOKENS` (The Monarch,
   Day // Night) move instead of duplicating. Menus are lost when a card enters a deck or on reload, so
   they are re-added on `onObjectSpawn` / `onObjectLeaveContainer` / state change / `onLoad`. Token
-  GMNotes are `{"token": label}` (no `id`, so the deck editor ignores them).
+  GMNotes are `{"token": label}` (no `id`, so the deck editor ignores them). `addPlayMenu` builds
+  these game-time menus.
+  **Booster Tutor** (card named `BOOSTER_TUTOR`, right-click "Open a booster"): takes 15 cards from
+  the undrafted cube into a face-up, locked row across the middle (revealed to all), each with a
+  **Take** button / menu. Only the opener can take; the card goes to their hand, the rest are put
+  back face-down into the cube, which is shuffled. One booster open at a time; `booster` persists.
 - `ui.xml` — status bar (hidden once the game starts), Start Draft button, Reset view, per-seat "your pick" prompts.
 
 **Privacy is per card, not hidden zones** (re-applied on every pickup/drop/state change via `rehide`, plus `!hide`). Pack cards use `setHiddenFrom(others)` (opponent sees

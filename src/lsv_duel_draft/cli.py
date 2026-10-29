@@ -17,11 +17,14 @@ from pathlib import Path
 from lsv_duel_draft import sheets as sh
 from lsv_duel_draft.models import Card, Sheet, Token
 from lsv_duel_draft.sources import (
+    CARD_SWAPS,
     MAGIC_CARD_BACK,
     download_image,
     fetch_cards,
+    fetch_cards_by_name,
     fetch_cube_ids,
     make_client,
+    swap_cards,
 )
 from lsv_duel_draft.tokens import load_tokens, match_makers, token_faces
 from lsv_duel_draft.tts_save import (
@@ -116,6 +119,10 @@ def main(argv: list[str] | None = None) -> None:
         ids, basic_ids = fetch_cube_ids(client, args.cube)
         print(f"{args.cube}: {len(ids)} cards, {len(basic_ids)} basic lands")
         cards = fetch_cards(client, ids)
+        replacements = fetch_cards_by_name(client, list(CARD_SWAPS.values()))
+        cards, absent = swap_cards(cards, {old: replacements[new] for old, new in CARD_SWAPS.items()})
+        for old, new in CARD_SWAPS.items():
+            print(f"  {old} -> {new}" + ("  (not in the cube; skipped)" if old in absent else ""))
         basics = fetch_cards(client, basic_ids)
         everything = cards + basics
         tokens, makers, missing = match_makers(load_tokens(), cards)

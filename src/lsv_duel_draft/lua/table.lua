@@ -40,6 +40,7 @@ local ready = {}        -- color -> true once their library and sideboard are ga
 local piles = {}        -- color -> { library = guid, sideboard = guid }
 local playing = false   -- board set up for the game
 local firstPlayer = nil
+local booster = nil      -- { color = opener, cards = { guid, ... } } while Booster Tutor's pack is open
 
 -- ---------------------------------------------------------------- helpers
 
@@ -686,7 +687,7 @@ function startGame()
   end
   broadcastToAll("Game on! " .. firstPlayer .. " goes first. Libraries are shuffled and you have drawn 7.",
     { 0.5, 1, 0.5 })
-  addTokenMenus()
+  addPlayMenus()
   updateUI()
 end
 
@@ -720,18 +721,24 @@ function tokensFor(obj)
   return tokenData.makers[id]
 end
 
--- Adds the "Create <token>" menu entries (calling it again replaces them).
-function addTokenMenu(obj)
+-- Adds a card's game-time menu: "Create <token>" for each token it makes and
+-- "Open a booster" on Booster Tutor (calling it again replaces them).
+function addPlayMenu(obj)
+  if obj == nil or obj.type ~= "Card" or inBooster(obj) then return end
   local labels = tokensFor(obj)
-  if labels == nil then return end
+  local tutor = obj.getName() == BOOSTER_TUTOR
+  if labels == nil and not tutor then return end
   obj.clearContextMenu()
-  for _, label in ipairs(labels) do
+  for _, label in ipairs(labels or {}) do
     obj.addContextMenuItem("Create " .. label, function(color) createToken(color, label, obj) end)
+  end
+  if tutor then
+    obj.addContextMenuItem("Open a booster", function(color) openBooster(color) end)
   end
 end
 
-function addTokenMenus()
-  for _, o in ipairs(getObjects()) do addTokenMenu(o) end
+function addPlayMenus()
+  for _, o in ipairs(getObjects()) do addPlayMenu(o) end
 end
 
 local function inSomeHand(obj)
@@ -790,12 +797,124 @@ end
 function onObjectSpawn(obj)
   if not playing then return end
   Wait.frames(function()
-    if obj ~= nil then addTokenMenu(obj) end
+    if obj ~= nil then addPlayMenu(obj) end
   end, 1)
 end
 
 function onObjectLeaveContainer(container, obj)
   onObjectSpawn(obj)
+end
+
+-- ---------------------------------------------------------------- booster tutor
+-- Booster Tutor (right-click > "Open a booster") reveals 15 cards from the
+-- undrafted rest of the cube in a row across the middle of the table. The
+-- player who opened it clicks Take on one: it goes to their hand and the
+-- other cards are shuffled back into the cube.
+
+BOOSTER_TUTOR = "Booster Tutor"
+BOOSTER_SIZE = 15
+BOOSTER_SCALE = 0.9
+BOOSTER_GAP = 0.2
+
+function inBooster(obj)
+  if booster == nil or obj == nil then return false end
+  return inList(booster.cards, obj.getGUID())
+end
+
+-- Card i of n, in a row across the middle, reading left to right for the opener.
+function boosterPosition(color, i, n)
+  local step = L.w * BOOSTER_SCALE + BOOSTER_GAP
+  return { x = (i - (n + 1) / 2) * step * -sideSign(color), y = L.feltY + 1.5, z = 0 }
+end
+
+-- Lays the open booster out face-up for everyone, locked, each card with a Take button.
+function layoutBooster()
+  if booster == nil or L == nil then return end
+  local n = #booster.cards
+  for i, id in ipairs(booster.cards) do
+    local card = getObjectFromGUID(id)
+    if card then
+      card.setHiddenFrom({})
+      card.setInvisibleTo({})
+      card.setLock(true)
+      card.setScale({ x = BOOSTER_SCALE, y = 1, z = BOOSTER_SCALE })
+      card.setRotation({ x = 0, y = seatYaw(booster.color), z = 0 })
+      card.setPosition(boosterPosition(booster.color, i, n))
+      card.clearButtons()
+      card.createButton({
+        click_function = "onBoosterTake",
+        function_owner = Global,
+        label = "Take",
+        position = { x = 0, y = 0.3, z = 1.75 },
+        width = 600, height = 220, font_size = 150,
+        color = { 0.35, 0.2, 0.55 }, font_color = { 1, 1, 1 },
+        tooltip = "Put this card into your hand",
+      })
+      card.clearContextMenu()
+      card.addContextMenuItem("Take this card", function(color) takeFromBooster(color, card) end)
+    end
+  end
+end
+
+function openBooster(color)
+  if not inList(COLORS, color) then
+    say(color, "Sit at White or Red to open a booster.")
+    return
+  end
+  if booster then
+    say(color, booster.color .. " already has a booster open.")
+    return
+  end
+  if cube == nil or L == nil then return end
+  local n = math.min(BOOSTER_SIZE, cube.getQuantity())
+  if n < 1 then
+    say(color, "The cube has no cards left to open.")
+    return
+  end
+  cube.shuffle()
+  booster = { color = color, cards = {} }
+  for i = 1, n do
+    local card = cube.takeObject({ position = boosterPosition(color, i, n), smooth = false })
+    if card then table.insert(booster.cards, card.getGUID()) end
+  end
+  layoutBooster()
+  broadcastToAll(color .. " opens a booster with Booster Tutor.", { 0.6, 0.85, 1 })
+end
+
+function onBoosterTake(card, color)
+  takeFromBooster(color, card)
+end
+
+-- The opener takes one card into their hand; the rest go back into the cube.
+function takeFromBooster(color, card)
+  if card == nil or not inBooster(card) then return end
+  if color ~= booster.color then
+    say(color, "Only " .. booster.color .. " can take a card from this booster.")
+    return
+  end
+  local rest = booster.cards
+  local taken = card.getGUID()
+  booster = nil
+  for _, id in ipairs(rest) do
+    local o = getObjectFromGUID(id)
+    if o then
+      o.clearButtons()
+      o.clearContextMenu()
+      o.setLock(false)
+      o.setScale({ x = 1, y = 1, z = 1 })
+      if id ~= taken and cube then
+        o.setRotation(cube.getRotation()) -- face-down like the cube, so it stays hidden there
+        cube.putObject(o)
+      end
+    end
+  end
+  card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
+  card.setPosition(Player[color].getHandTransform().position)
+  addPlayMenu(card)
+  Wait.time(function()
+    if cube then cube.shuffle() end
+  end, 1)
+  broadcastToAll(color .. " takes " .. card.getName() .. " from the booster.", { 0.6, 0.85, 1 })
 end
 
 -- ---------------------------------------------------------------- privacy
@@ -851,7 +970,7 @@ function onObjectStateChange(obj, oldGuid)
     end
   end
   rehide(obj)
-  if playing then addTokenMenu(obj) end
+  if playing then addPlayMenu(obj) end
 end
 
 function onObjectDrop(color, obj)
@@ -916,7 +1035,8 @@ function onSave()
   local botList = {}
   for color in pairs(bots) do table.insert(botList, color) end
   return JSON.encode({ draft = draft:serialize(), discard = discardGuid, bots = botList,
-                       ready = ready, piles = piles, playing = playing, firstPlayer = firstPlayer })
+                       ready = ready, piles = piles, playing = playing, firstPlayer = firstPlayer,
+                       booster = booster })
 end
 
 function onLoad(saved)
@@ -938,6 +1058,7 @@ function onLoad(saved)
     piles = data.piles or {}
     playing = data.playing == true
     firstPlayer = data.firstPlayer
+    booster = data.booster
   else
     draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48 })
   end
@@ -965,7 +1086,8 @@ function onLoad(saved)
       end
     end
     if playing then
-      addTokenMenus()
+      layoutBooster()
+      addPlayMenus()
       updateUI()
       for _, color in ipairs(COLORS) do frameCamera(color) end
     elseif draft.finished then
