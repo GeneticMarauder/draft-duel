@@ -62,20 +62,18 @@ CubeCobra cube (default `LSVCube`). Two halves:
 - `draft_core.lua` — pure rules engine (no TTS API). Per pack, starter S / other O:
   S picks, O picks, O picks, S picks — each from 4 cards (topped up from the cube), then the
   3 leftovers are discarded face-up. Starter alternates; 24 packs → 48 picks each.
-- `table.lua` — TTS adapter: deals into hands face-up (a hand keeps face-down cards face-down),
-  "Draft this card" context menu (and drag into your own pick area), picks laid face-up in the
-  picker's hidden zone, bots for seats empty at Start Draft, state persisted via `onSave`/`onLoad`.
+- `table.lua` — TTS adapter. Per side, from the middle out: cube + discard strip, the pack row
+  (current pack: 4 cards at 1.5x, side by side, locked, with an on-card **Draft** button and a
+  right-click "Draft this card"), then the 12x4 pick grid (0.65x). Bots draft for seats empty at
+  Start Draft. State persists via `onSave`/`onLoad` (buttons, menus and visibility are reapplied).
   Chat commands: `!draftdebug` (geometry dump), `!draftauto [n]` (random picks for testing).
+- `ui.xml` — status bar, Start Draft button, Reset view, per-seat "your pick" prompts.
 
-- `ui.xml` — status bar, Start Draft button, per-seat "your pick" prompts.
+**Privacy is per card, not hidden zones.** Pack cards use `setHiddenFrom(others)` (opponent sees
+backs); picks use `setInvisibleTo(others)`. Hidden zones were dropped: TTS draws them as solid
+blocks in the owner's color and ignores their tint. Hand zones exist only to define seats.
 
-**Verified in game (Table_RPG)** — keep these when changing layout:
-- Felt top is y≈0.96; table bounds 64 x 43. Hidden zones are thin slabs (y 0.8–1.6) fixed in the
-  save and never moved by script. Picks are placed *inside* the slab (never dropped from above).
-- TTS ignores a hidden zone's `ColorDiffuse`: opponents see a solid slab in the owner's color,
-  owners see their own picks through a translucent tint of their color (Alt-hover shows clean art).
-- Camera (`frameCamera`) sits slightly *in front of* the hand zone; any further back and the hand's
-  in-world copy shows on screen beside TTS's own hand display.
+**Verified in game (Table_RPG):** felt top y≈0.96, table bounds 64 x 43.
 
 **Tests** — `tests/test_draft_lua.py` runs the real Lua under `lupa` against `tests/lua/tts_mock.lua`
 (a mock of the TTS API); keep TTS-specific calls inside the mock's surface or extend the mock.

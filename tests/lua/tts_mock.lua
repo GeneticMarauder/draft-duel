@@ -18,6 +18,11 @@ function Mock.newObject(guid, kind)
   o.getScale = function() return vec(o.scale) end
   o.getValue = function() return o.value end
   o.setValue = function(v) o.value = v end
+  o.setInvisibleTo = function(colors) o.invisibleTo = colors end
+  o.setHiddenFrom = function(colors) o.hiddenFrom = colors end
+  o.buttons = {}
+  o.createButton = function(params) table.insert(o.buttons, params) end
+  o.clearButtons = function() o.buttons = {} end
   o.setLock = function(b) o.locked = b end
   o.getBounds = function() return { size = { x = 2.2, y = 0.2, z = 3.1 } } end
   o.addContextMenuItem = function(label, fn) table.insert(o.menu, { label = label, fn = fn }) end
@@ -80,8 +85,6 @@ function Mock.setup(cubeSize)
   cube.getBounds = function() return { size = { x = 2.2, y = 2.1, z = 3.06 } } end
   Mock.newHand("a00001", "White", -19, 0)
   Mock.newHand("a00002", "Red", 19, 180)
-  Mock.newObject("b00001", "Fog").value = "White"
-  Mock.newObject("b00002", "Fog").value = "Red"
   Player = { White = makePlayer("White", "a00001"), Red = makePlayer("Red", "a00002") }
 end
 
@@ -95,20 +98,26 @@ function Mock.flush()
   end
 end
 
+-- The pack is on the table: the pickable cards (those with a Draft button)
+-- on one side. White's side is z < 0.
+local function sideOf(o)
+  if o.pos.z < 0 then return "White" end
+  return "Red"
+end
+
 function Mock.packHolder()
-  for _, color in ipairs({ "White", "Red" }) do
-    for _, o in ipairs(Player[color].getHandObjects()) do
-      if #o.menu > 0 then return color end
-    end
+  for _, o in pairs(Mock.objects) do
+    if o.kind == "Card" and #o.buttons > 0 then return sideOf(o) end
   end
   return nil
 end
 
 function Mock.packCards(color)
   local out = {}
-  for _, o in ipairs(Player[color].getHandObjects()) do
-    if #o.menu > 0 then table.insert(out, o) end
+  for _, o in pairs(Mock.objects) do
+    if o.kind == "Card" and #o.buttons > 0 and sideOf(o) == color then table.insert(out, o) end
   end
+  table.sort(out, function(a, b) return a.pos.x < b.pos.x end)
   return out
 end
 

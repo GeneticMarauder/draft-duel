@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
-import pytest
 from lupa import LuaRuntime
 
 LUA_DIR = resources.files("lsv_duel_draft") / "lua"
@@ -140,7 +140,7 @@ def _play(lua: LuaRuntime, picks: int) -> None:
         holder = g.Mock.packHolder()
         cards = _lua_list(g.Mock.packCards(holder))
         assert len(cards) == 4, f"{holder} should hold a 4-card pack"
-        cards[0].menu[1].fn(holder)
+        g.onDraftButton(cards[0], holder)  # the on-card Draft button
         g.Mock.flush()
 
 
@@ -148,12 +148,10 @@ def _lua_list(t) -> list:
     return [t[i] for i in range(1, len(t) + 1)]
 
 
-@pytest.mark.parametrize("table_d", [40, 26])
-def test_table_adapter_runs_a_whole_draft(table_d: int) -> None:
+def test_table_adapter_runs_a_whole_draft() -> None:
     lua = make_lua(with_table=True)
     g = lua.globals()
     g.Mock.setup(515)
-    g.Mock.tableD = table_d
     g.onLoad("")
     g.Mock.flush()
     assert g.Mock.ui["startButton.active"] == "true"
@@ -166,21 +164,17 @@ def test_table_adapter_runs_a_whole_draft(table_d: int) -> None:
         assert cam is not None and cam.distance > 0
     assert g.Player.White.camera.position.z < 0 < g.Player.Red.camera.position.z
 
-    import math
-
+    # Each camera looks down at its own pack row; hand zones sit past the pick grid.
+    grid_far_edge = g.PICK_GRID_Z + 3 * 3.06 * g.PICK_SCALE * 1.05 + 3.06 * g.PICK_SCALE / 2
     for color, hand_guid in (("White", "a00001"), ("Red", "a00002")):
-        hand_z = abs(g.Mock.objects[hand_guid].pos.z)
-        from lsv_duel_draft.tts_save import FOG_OUTER as _FO
-
-        assert hand_z > _FO, "hand zone sits past the hidden zone, near the table edge"
+        assert abs(g.Mock.objects[hand_guid].pos.z) > grid_far_edge
         cam = g.Player[color].camera
-        cam_back = abs(cam.position.z) + cam.distance * math.cos(math.radians(cam.pitch))
-        assert hand_z - 4 < cam_back < hand_z, "camera sits just in front of its hand zone, hiding it"
+        assert abs(abs(cam.position.z) - g.PACK_ROW_Z) < 2
 
     holder = g.Mock.packHolder()
     other = "Red" if holder == "White" else "White"
     pack = _lua_list(g.Mock.packCards(holder))
-    assert all(c.rot.z == 0 for c in pack), "cards sit face-up in the owner's hand"
+    assert all(c.rot.z == 0 for c in pack), "pack cards are face-up for their holder"
     card = pack[0]
     card.menu[1].fn(other)  # opponent tries to draft from someone else's pack
     assert any("not yours" in m for m in _lua_list(g.Mock.messages))
@@ -190,25 +184,20 @@ def test_table_adapter_runs_a_whole_draft(table_d: int) -> None:
     assert "White 48/48" in g.Mock.ui["statusText"] and "Red 48/48" in g.Mock.ui["statusText"]
     assert len(g.Mock.objects["c00001"].cards) == 515 - 168
 
-    picks = [o for o in g.Mock.objects.values() if o.kind == "Card" and o.rot.z == 0 and o.pos.x != 6]
+    picks = [o for o in g.Mock.objects.values() if o.kind == "Card" and o.scale.x == g.PICK_SCALE]
     white = [o for o in picks if o.pos.z < 0]
     red = [o for o in picks if o.pos.z > 0]
     assert len(white) == 48 and len(red) == 48
     assert all(o.locked for o in picks)
-    # Each pick sits inside its owner's hidden zone (fixed geometry from the save)
-    # and the middle strip (cube deck, discard pile) stays outside both zones.
-    from lsv_duel_draft.tts_save import (
-        FOG_BOTTOM,
-        FOG_HEIGHT,
-        FOG_INNER,
-        FOG_OUTER,
-        FOG_WIDTH,
-    )
-
-    for o in picks:
-        assert FOG_INNER < abs(o.pos.z) < FOG_OUTER and abs(o.pos.x) < FOG_WIDTH / 2
-        assert FOG_BOTTOM < o.pos.y < FOG_BOTTOM + FOG_HEIGHT, "placed inside the zone, never dropped from above it"
-    assert abs(g.Mock.objects["c00001"].pos.z) < FOG_INNER
+    # Picks stay in the owner's pick area, clear of the middle strip (cube deck,
+    # discard pile), and each one is invisible to every seat but its owner.
+    for color, mine in (("White", white), ("Red", red)):
+        other = "Red" if color == "White" else "White"
+        for o in mine:
+            assert g.PICK_GRID_Z - 0.01 < abs(o.pos.z) < grid_far_edge
+            assert abs(o.pos.x) < 6 * 2.2 * g.PICK_SCALE * 1.05
+            hidden_from = set(_lua_list(o.invisibleTo))
+            assert other in hidden_from and "Grey" in hidden_from and color not in hidden_from
 
 
 def test_table_adapter_survives_save_and_reload_mid_draft() -> None:
@@ -230,7 +219,7 @@ def test_table_adapter_survives_save_and_reload_mid_draft() -> None:
     assert g.Mock.ui["statusText"].startswith("Draft complete")
 
 
-def test_dropping_a_pack_card_on_the_table_returns_it_to_hand() -> None:
+def test_pack_is_laid_out_on_the_table_for_its_holder_only() -> None:
     lua = make_lua(with_table=True)
     g = lua.globals()
     g.Mock.setup(515)
@@ -239,11 +228,23 @@ def test_dropping_a_pack_card_on_the_table_returns_it_to_hand() -> None:
     g.onStartClicked(g.Player.White)
     g.Mock.flush()
     holder = g.Mock.packHolder()
-    card = _lua_list(g.Mock.packCards(holder))[0]
-    card.setPosition(lua.table(x=0, y=2, z=0))  # dropped in the middle of the table
-    g.onObjectDrop(holder, card)
-    g.Mock.flush()
-    assert len(_lua_list(g.Mock.packCards(holder))) == 4
+    other = "Red" if holder == "White" else "White"
+    pack = _lua_list(g.Mock.packCards(holder))
+    assert len(pack) == 4
+    # Side by side on the holder's pack row, face-up, enlarged, not overlapping.
+    xs = sorted(c.pos.x for c in pack)
+    card_w = 2.2 * g.PACK_SCALE
+    assert all(b - a > card_w for a, b in itertools.pairwise(xs)), "pack cards overlap"
+    assert abs(sum(xs) / 4) < 0.01, "pack row is centred"
+    assert all(abs(abs(c.pos.z) - g.PACK_ROW_Z) < 0.01 and c.rot.z == 0 and c.locked for c in pack)
+    # The opponent sees only card backs; the holder sees the faces.
+    for c in pack:
+        hidden = set(_lua_list(c.hiddenFrom))
+        assert other in hidden and holder not in hidden
+    # Pack row sits between the middle strip (cube, discard pile) and the pick grid.
+    pack_far_edge = g.PACK_ROW_Z + 3.06 * g.PACK_SCALE / 2
+    grid_near_edge = g.PICK_GRID_Z - 3.06 * g.PICK_SCALE / 2
+    assert g.PACK_ROW_Z - 3.06 * g.PACK_SCALE / 2 > 3.06 / 2 and pack_far_edge < grid_near_edge
 
 
 def test_ui_xml_is_well_formed_and_unescaped() -> None:
@@ -272,7 +273,7 @@ def _human_picks(lua: LuaRuntime, n: int) -> None:
         assert g.Mock.packHolder() == "White", "between human picks the pack is always back with White"
         cards = _lua_list(g.Mock.packCards("White"))
         assert len(cards) == 4
-        cards[0].menu[1].fn("White")
+        cards[0].menu[1].fn("White")  # right-click > Draft this card
         g.Mock.flush()
 
 
@@ -298,20 +299,30 @@ def test_bot_keeps_drafting_after_reload() -> None:
     assert g.Mock.ui["statusText"].startswith("Draft complete")
 
 
-def test_debug_command_and_missing_fog_zone_is_recreated() -> None:
+def test_debug_command_prints_geometry() -> None:
     lua = make_lua(with_table=True)
     g = lua.globals()
     g.Mock.setup(515)
-    g.Mock.objects["b00002"] = None  # Red's hidden zone is missing
     g.onLoad("")
     g.Mock.flush()
-    msgs = _lua_list(g.Mock.messages)
-    assert any("Red was missing" in m for m in msgs)
-    assert g.FOG_GUIDS.Red != "b00002" and g.Mock.objects[g.FOG_GUIDS.Red].value == "Red"
-
     assert g.onChat("!draftdebug", g.Player.White) is False
     out = " | ".join(_lua_list(g.Mock.messages))
-    assert "White fog" in out and "Red hand" in out and "MISSING" not in out
+    assert "White hand" in out and "Red hand" in out and "feltY" in out and "MISSING" not in out
+
+
+def test_picks_stay_invisible_to_opponent_after_reload() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    _start_vs_bot(lua)
+    _human_picks(lua, 3)
+    saved = g.onSave()
+    for o in g.Mock.objects.values():  # simulate TTS forgetting visibility on reload
+        o.invisibleTo = None
+    g.onLoad(saved)
+    g.Mock.flush()
+    picks = [o for o in g.Mock.objects.values() if o.kind == "Card" and o.scale.x == g.PICK_SCALE]
+    assert len(picks) >= 6  # the bot may have picked again after the reload
+    assert all(o.invisibleTo is not None for o in picks)
 
 
 def test_draftauto_command_finishes_the_draft_against_a_bot() -> None:

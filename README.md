@@ -20,10 +20,10 @@ The starting player alternates every pack. 24 packs gives each player 48 cards.
 1. The host loads **LSV Cube Duel Draft** from *Games → Save & Load*. Your opponent just joins the game.
 2. One player sits at **White** and the other at **Red**. Either of them presses **Start Draft**.
    To practise alone, leave a seat empty: a bot drafts random cards for any seat that is empty at Start Draft.
-3. When it's your pick, the pack is in your hand. **Right-click a card → Draft this card**, or drag it
-   onto your side of the table.
-4. Your picks are laid out face-up in front of you, inside a hidden zone your opponent can't see.
-   The discard pile in the middle is open: right-click it and choose **Search** to look through it.
+3. When it's your pick, your 4 pack cards are laid out large in front of you. Click **Draft** under
+   the card you want (or right-click it → **Draft this card**). Your opponent sees only card backs.
+4. Your picks go into a grid below the pack, invisible to your opponent. The discard pile in the
+   middle is open: right-click it and choose **Search** to look through it.
 5. Hold **Alt** while hovering a card for a large preview. **Reset view** (top right) re-frames your camera.
 
 Testing helpers (type in chat): `!draftauto 10` makes 10 random picks for you; `!draftdebug` prints

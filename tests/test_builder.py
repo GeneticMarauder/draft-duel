@@ -78,15 +78,6 @@ def test_save_structure() -> None:
     assert sum(1 for c in deck["ContainedObjects"] if "States" in c) == 20
     assert all(int(k) < BACK_SHEET_BASE for k in deck["CustomDeck"])
 
-    zones = {(o["Name"], o["FogColor"]) for o in save["ObjectStates"] if "FogColor" in o}
-    assert zones == {("HandTrigger", "White"), ("HandTrigger", "Red"),
-                     ("FogOfWarTrigger", "White"), ("FogOfWarTrigger", "Red")}
+    names = [(o["Name"], o.get("FogColor")) for o in save["ObjectStates"] if o["Name"] != "Deck"]
+    assert names == [("HandTrigger", "White"), ("HandTrigger", "Red")], "no hidden-zone blocks on the table"
     assert "DraftCore" in save["LuaScript"] and "onStartClicked" in save["XmlUI"]
-
-    for fog in (o for o in save["ObjectStates"] if o["Name"] == "FogOfWarTrigger"):
-        t = fog["Transform"]
-        near = abs(t["posZ"]) - t["scaleZ"] / 2
-        assert near > 1.6, "the middle strip (cube deck + discard pile at z=0) is outside both hidden zones"
-        assert fog["FogReverseHiding"] is False and fog["FogSeethrough"] is True
-        bottom, top = t["posY"] - t["scaleY"] / 2, t["posY"] + t["scaleY"] / 2
-        assert bottom < 0.96 < top <= 2.0, "a thin slab on the felt (y=0.96), not a wall"

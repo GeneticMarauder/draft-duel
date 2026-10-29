@@ -6,9 +6,9 @@
         textColor="#FFFFFF" colors="#2E7D32|#388E3C|#1B5E20|#555555" onClick="onStartClicked">Start Draft</Button>
 <Button id="resetViewButton" rectAlignment="UpperRight" offsetXY="-12 -120" width="140" height="36" fontSize="16"
         textColor="#FFFFFF" colors="#37474F|#455A64|#263238|#555555" onClick="onResetView">Reset view</Button>
-<Panel id="prompt_White" visibility="White" active="false" rectAlignment="LowerCenter" offsetXY="0 240" width="700" height="54" color="#B8860BEE">
-  <Text fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Your pick! Right-click a card in your hand, then choose Draft this card</Text>
+<Panel id="prompt_White" visibility="White" active="false" rectAlignment="LowerCenter" offsetXY="0 40" width="700" height="54" color="#B8860BEE">
+  <Text fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Your pick! Click Draft under a card (or right-click it, then Draft this card)</Text>
 </Panel>
-<Panel id="prompt_Red" visibility="Red" active="false" rectAlignment="LowerCenter" offsetXY="0 240" width="700" height="54" color="#B8860BEE">
-  <Text fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Your pick! Right-click a card in your hand, then choose Draft this card</Text>
+<Panel id="prompt_Red" visibility="Red" active="false" rectAlignment="LowerCenter" offsetXY="0 40" width="700" height="54" color="#B8860BEE">
+  <Text fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Your pick! Click Draft under a card (or right-click it, then Draft this card)</Text>
 </Panel>

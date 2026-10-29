@@ -1,22 +1,39 @@
--- Table adapter: wires DraftCore to Tabletop Simulator objects, hands and UI.
+-- Table adapter: wires DraftCore to Tabletop Simulator objects and UI.
 -- The builder concatenates draft_core.lua + this file into the save's Global script.
+--
+-- Each player's half of the table, from the middle outward:
+--   middle strip  : cube deck and face-up discard pile (z = 0)
+--   pack row      : the current pack, 4 large cards side by side, with Draft buttons
+--   pick grid     : the player's picks, 12 x 4 smaller cards
+-- Privacy is per card: the pack is hidden from the opponent (they see card
+-- backs), picks are invisible to everyone but their owner.
 
 COLORS = { "White", "Red" }
 CUBE_GUID = "c00001"
 HAND_GUIDS = { White = "a00001", Red = "a00002" }
-FOG_GUIDS = { White = "b00001", Red = "b00002" }
 
+-- Every seat color, so a card can be hidden from all but its owner.
+ALL_COLORS = { "White", "Brown", "Red", "Orange", "Yellow", "Green", "Teal", "Blue",
+               "Purple", "Pink", "Grey", "Black" }
+
+PACK_SCALE = 1.5     -- pack cards are drawn larger than normal
+PACK_GAP = 0.5       -- space between pack cards
+PACK_ROW_Z = 5.2     -- distance of the pack row's centre from the middle line
+PICK_SCALE = 0.65
 PICK_COLS = 12
 PICK_ROWS = 4
+PICK_GRID_Z = 9.8    -- distance of the first pick row's centre from the middle line
+HAND_Z = 20          -- hand zones (unused during the draft) sit past the table edge
 DISCARD_X = 6
-CUBE_X = -6
 LOCK_DELAY = 1.2
 BOT_DELAY = 1.0
+CAMERA_PITCH = 60
+CAMERA_DISTANCE = 23
 
 local draft = nil       -- DraftCore instance
 local cube = nil        -- the face-down cube deck
 local discardGuid = nil -- face-up discard pile (a deck once 2+ cards land)
-local L = nil           -- computed layout
+local L = nil           -- measured sizes
 local bots = {}         -- color -> true for seats that were empty at Start Draft
 
 -- ---------------------------------------------------------------- helpers
@@ -29,13 +46,9 @@ local function say(color, msg)
   end
 end
 
-local function handTransform(color)
-  return Player[color].getHandTransform()
-end
-
 -- Yaw that makes a face-up card read upright for a seat.
 local function seatYaw(color)
-  local t = handTransform(color)
+  local t = Player[color].getHandTransform()
   if t and t.rotation then return (t.rotation.y + 180) % 360 end
   if color == COLORS[1] then return 180 end
   return 0
@@ -53,14 +66,13 @@ local function inList(list, value)
   return false
 end
 
-local function isInHand(color, obj)
-  for _, o in ipairs(Player[color].getHandObjects()) do
-    if o == obj then return true end
+local function othersThan(owner)
+  local others = {}
+  for _, c in ipairs(ALL_COLORS) do
+    if c ~= owner then table.insert(others, c) end
   end
-  return false
+  return others
 end
-
--- ---------------------------------------------------------------- layout
 
 local function boundsSize(obj)
   if obj == nil then return nil end
@@ -69,96 +81,75 @@ local function boundsSize(obj)
   return nil
 end
 
--- Same geometry as tts_save.py: each hidden zone is a low slab over its
--- player's pick grid. The layout is sized to fit inside it.
-FOG_INNER, FOG_OUTER, FOG_WIDTH, FOG_HEIGHT, FOG_BOTTOM = 2.0, 17.5, 34.0, 0.8, 0.8
+-- ---------------------------------------------------------------- layout
 
--- Sizes the pick grid from the real card size so it fits inside the hidden
--- zones; the hand sits just past the zone, near the table edge.
+-- Measures the card size and felt height from the cube deck.
 function computeLayout()
-  local w, h = 2.2, 3.1
+  local w, h = 2.2, 3.06
   local size = boundsSize(cube)
   if size and size.x > 0.5 and size.z > 0.5 then w, h = size.x, size.z end
-
   -- Felt height: bottom of the cube deck (measured 0.96 on Table_RPG).
   local tableY, feltY = 2, 0.96
   if cube then
     tableY = cube.getPosition().y
     if size then feltY = tableY - size.y / 2 end
   end
-
-  local s, rowStart, outer, halfW = 1, 0, 0, 0
-  while true do
-    rowStart = h / 2 + 0.8 + s * h / 2
-    outer = rowStart + (PICK_ROWS - 1) * h * 1.04 * s + s * h / 2
-    halfW = PICK_COLS * w * 1.04 * s / 2
-    if (outer <= FOG_OUTER - 0.3 and halfW <= FOG_WIDTH / 2 - 0.3) or s <= 0.5 then break end
-    s = s - 0.05
-  end
-
-  L = {
-    s = s, w = w, h = h, tableY = tableY, feltY = feltY,
-    dx = w * 1.04 * s, dz = h * 1.04 * s,
-    rowStart = rowStart, outer = outer, halfW = halfW,
-    handZ = FOG_OUTER + 2.5,
-  }
+  L = { w = w, h = h, tableY = tableY, feltY = feltY }
 end
 
--- Moves the hand zones to match the computed layout. Hidden zones are fixed in
--- the save (each covers its whole half of the table) and are never moved.
+-- Moves the (unused) hand zones past the table edges.
 function placeZones()
   for _, color in ipairs(COLORS) do
     local hand = getObjectFromGUID(HAND_GUIDS[color])
     if hand then
       local p = hand.getPosition()
-      hand.setPosition({ x = 0, y = p.y, z = sideSign(color) * L.handZ })
+      hand.setPosition({ x = 0, y = p.y, z = sideSign(color) * HAND_Z })
     end
   end
 end
 
-function ensureFogZones()
-  for _, color in ipairs(COLORS) do
-    if getObjectFromGUID(FOG_GUIDS[color]) == nil then
-      local sign = sideSign(color)
-      printToAll("Hidden zone for " .. color .. " was missing; recreating it.", { 1, 0.6, 0.4 })
-      spawnObject({
-        type = "FogOfWarTrigger",
-        position = { x = 0, y = FOG_BOTTOM + FOG_HEIGHT / 2, z = sign * (FOG_INNER + FOG_OUTER) / 2 },
-        scale = { x = FOG_WIDTH, y = FOG_HEIGHT, z = FOG_OUTER - FOG_INNER },
-        sound = false,
-        callback_function = function(zone)
-          zone.setValue(color)
-          FOG_GUIDS[color] = zone.getGUID()
-        end,
-      })
-    end
-  end
+-- Pack card i of n, centred left-to-right on the player's pack row.
+function packPosition(color, i, n)
+  local sign = sideSign(color)
+  local step = L.w * PACK_SCALE + PACK_GAP
+  local x = (i - (n + 1) / 2) * step * -sign
+  return { x = x, y = L.feltY + 0.25, z = sign * PACK_ROW_Z }
 end
+
+function slotPosition(color, slot)
+  local i = slot - 1
+  local col = i % PICK_COLS
+  local row = math.floor(i / PICK_COLS)
+  local sign = sideSign(color)
+  local dx = L.w * PICK_SCALE * 1.05
+  local dz = L.h * PICK_SCALE * 1.05
+  local x = (col - (PICK_COLS - 1) / 2) * dx * -sign
+  local z = sign * (PICK_GRID_Z + row * dz)
+  return { x = x, y = L.feltY + 0.25, z = z }
+end
+
+-- ---------------------------------------------------------------- debug
 
 local function fmt(v)
   if v == nil then return "nil" end
   return string.format("(%.1f, %.1f, %.1f)", v.x, v.y, v.z)
 end
 
--- Chat "!draftdebug": prints the numbers needed to diagnose layout/zone problems.
+-- Chat "!draftdebug": prints the numbers needed to diagnose layout problems.
 function printDebug()
   local ok, tbl = pcall(function() return Tables.getTableObject() end)
   local tsize = ok and boundsSize(tbl) or nil
   printToAll("table=" .. tostring(ok and tbl ~= nil) .. " size=" .. fmt(tsize), { 0.8, 0.8, 0.8 })
   if L then
-    printToAll(string.format("card=%.2fx%.2f s=%.2f rowStart=%.1f outer=%.1f halfW=%.1f handZ=%.1f tableY=%.2f feltY=%.2f",
-      L.w, L.h, L.s, L.rowStart, L.outer, L.halfW, L.handZ, L.tableY, L.feltY), { 0.8, 0.8, 0.8 })
+    printToAll(string.format("card=%.2fx%.2f tableY=%.2f feltY=%.2f", L.w, L.h, L.tableY, L.feltY),
+      { 0.8, 0.8, 0.8 })
   end
   for _, color in ipairs(COLORS) do
-    for kind, guids in pairs({ hand = HAND_GUIDS, fog = FOG_GUIDS }) do
-      local o = getObjectFromGUID(guids[color])
-      if o then
-        local okv, value = pcall(function() return o.getValue() end)
-        printToAll(color .. " " .. kind .. ": pos=" .. fmt(o.getPosition()) .. " scale=" .. fmt(o.getScale())
-          .. " value=" .. tostring(okv and value or "?"), { 0.8, 0.8, 0.8 })
-      else
-        printToAll(color .. " " .. kind .. ": MISSING (" .. guids[color] .. ")", { 1, 0.4, 0.4 })
-      end
+    local o = getObjectFromGUID(HAND_GUIDS[color])
+    if o then
+      printToAll(color .. " hand: pos=" .. fmt(o.getPosition()), { 0.8, 0.8, 0.8 })
+    else
+      printToAll(color .. " hand: MISSING (" .. HAND_GUIDS[color] .. ")", { 1, 0.4, 0.4 })
     end
   end
 end
@@ -189,22 +180,6 @@ function onChat(message, player)
   end
 end
 
-function slotPosition(color, slot)
-  local i = slot - 1
-  local col = i % PICK_COLS
-  local row = math.floor(i / PICK_COLS)
-  local sign = sideSign(color)
-  local x = (col - (PICK_COLS - 1) / 2) * L.dx * -sign
-  local z = sign * (L.rowStart + row * L.dz)
-  return { x = x, y = L.feltY + 0.25, z = z }
-end
-
-function inPickArea(color, pos)
-  local sign = sideSign(color)
-  local z = pos.z * sign
-  return z >= L.h / 2 + 0.4 and z <= L.handZ and math.abs(pos.x) <= L.halfW + 1
-end
-
 -- ---------------------------------------------------------------- UI
 
 function updateUI()
@@ -219,41 +194,66 @@ function updateUI()
   end
 end
 
--- ---------------------------------------------------------------- actions
+-- ---------------------------------------------------------------- pack cards
 
-local function attachMenu(card)
+-- Draft button under each pack card, plus a right-click menu entry.
+local function makePickable(card)
+  card.clearButtons()
+  card.createButton({
+    click_function = "onDraftButton",
+    function_owner = Global,
+    label = "Draft",
+    position = { x = 0, y = 0.3, z = 1.75 },
+    width = 600, height = 220, font_size = 150,
+    color = { 0.72, 0.53, 0.04 }, font_color = { 1, 1, 1 },
+    tooltip = "Draft this card",
+  })
   card.clearContextMenu()
   card.addContextMenuItem("Draft this card", function(playerColor)
     tryPick(playerColor, card)
   end)
 end
 
--- Cards go straight into the hand face-up (no flight across the table): a hand
--- shows its cards' faces only to its owner, but keeps a face-down card face-down.
-local function dealTo(color, count)
-  local t = handTransform(color)
-  local yaw = seatYaw(color)
-  for i = 1, count do
-    local card = cube.takeObject({
-      position = { x = t.position.x, y = t.position.y + 0.5 + i * 0.2, z = t.position.z },
-      rotation = { x = 0, y = yaw, z = 0 },
-      smooth = false,
-    })
+local function makeUnpickable(card)
+  card.clearButtons()
+  card.clearContextMenu()
+end
+
+function onDraftButton(card, playerColor)
+  tryPick(playerColor, card)
+end
+
+-- Lays the current pack out on its holder's pack row: face-up, large, locked,
+-- hidden from everyone else (they see card backs).
+function layoutPack()
+  if draft == nil or not draft.started or draft.finished then return end
+  local holder = draft:picker()
+  if holder == nil then return end
+  local n = #draft.pack
+  for i, id in ipairs(draft.pack) do
+    local card = getObjectFromGUID(id)
     if card then
-      draft:addToPack(card.getGUID())
-      attachMenu(card)
+      card.setHiddenFrom(othersThan(holder))
+      card.setInvisibleTo({})
+      card.setLock(true)
+      card.setScale({ x = PACK_SCALE, y = 1, z = PACK_SCALE })
+      card.setRotation({ x = 0, y = seatYaw(holder), z = 0 })
+      card.setPosition(packPosition(holder, i, n))
     end
   end
 end
 
-local function passPack(to, ids)
-  local t = handTransform(to)
-  local yaw = seatYaw(to)
-  for i, id in ipairs(ids) do
-    local card = getObjectFromGUID(id)
+local function dealTo(color, count)
+  for i = 1, count do
+    local card = cube.takeObject({
+      position = { x = 0, y = L.tableY + 2 + i * 0.2, z = sideSign(color) * PACK_ROW_Z },
+      rotation = { x = 0, y = seatYaw(color), z = 180 },
+      smooth = false,
+    })
     if card then
-      card.setRotation({ x = 0, y = yaw, z = 0 })
-      card.setPosition({ x = t.position.x, y = t.position.y + 0.5 + i * 0.2, z = t.position.z })
+      card.setHiddenFrom(othersThan(color))
+      draft:addToPack(card.getGUID())
+      makePickable(card)
     end
   end
 end
@@ -261,9 +261,11 @@ end
 local function placePick(color, id, slot)
   local card = getObjectFromGUID(id)
   if card == nil then return end
-  card.clearContextMenu()
+  makeUnpickable(card)
+  card.setInvisibleTo(othersThan(color)) -- before it moves, so it is never seen
+  card.setHiddenFrom({})
   card.setLock(false)
-  card.setScale({ x = L.s, y = 1, z = L.s })
+  card.setScale({ x = PICK_SCALE, y = 1, z = PICK_SCALE })
   card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
   card.setPosition(slotPosition(color, slot))
   Wait.time(function()
@@ -278,7 +280,11 @@ local function discardCards(ids)
   for i, id in ipairs(ids) do
     local card = getObjectFromGUID(id)
     if card then
-      card.clearContextMenu()
+      makeUnpickable(card)
+      card.setHiddenFrom({})
+      card.setInvisibleTo({})
+      card.setLock(false)
+      card.setScale({ x = 1, y = 1, z = 1 })
       card.setRotation({ x = 0, y = 180, z = 0 })
       card.setPosition({ x = DISCARD_X, y = L.tableY + 1 + i * 0.3, z = 0 })
       table.insert(toGroup, card)
@@ -298,12 +304,12 @@ local function discardCards(ids)
   end, 1)
 end
 
+-- ---------------------------------------------------------------- flow
+
 function runActions(actions)
   for _, a in ipairs(actions) do
     if a.type == "deal" then
       dealTo(a.to, a.count)
-    elseif a.type == "pass" then
-      passPack(a.to, a.cards)
     elseif a.type == "pick" then
       placePick(a.color, a.card, a.slot)
     elseif a.type == "discard" then
@@ -311,7 +317,9 @@ function runActions(actions)
     elseif a.type == "finished" then
       broadcastToAll("Draft complete! Your 48 picks are laid out in front of you (hidden from your opponent).", { 0.5, 1, 0.5 })
     end
+    -- "pass" needs no work of its own: layoutPack moves the pack to its new holder.
   end
+  layoutPack()
   updateUI()
   promptPicker()
 end
@@ -344,25 +352,16 @@ function tryPick(color, card)
   runActions(actions)
 end
 
-CAMERA_PITCH = 55
-
--- Places a seat's camera just behind its hand zone, looking toward the middle
--- of the table: the pick grid and the cube are in view, while the hand zone
--- itself stays below the screen (TTS shows the hand at the bottom instead).
+-- Looks down at the seat's pack row, so the pack sits mid-screen with the
+-- pick grid below it and the cube, discard pile and opponent beyond.
 function frameCamera(color)
   if L == nil or not inList(COLORS, color) or not Player[color].seated then return end
-  local t = handTransform(color)
-  -- Aim at the middle of your own pick grid; the cube and discard pile sit
-  -- just beyond it.
-  local target = L.rowStart + (PICK_ROWS - 1) * L.dz / 2
-  -- The camera sits a little in front of the hand zone, so the hand's
-  -- in-world copy is behind it and only TTS's own hand display shows.
-  local horizontal = L.handZ - 2.5 - target
+  local t = Player[color].getHandTransform()
   Player[color].lookAt({
-    position = { x = 0, y = L.tableY, z = sideSign(color) * target },
+    position = { x = 0, y = L.feltY, z = sideSign(color) * (PACK_ROW_Z + 1) },
     pitch = CAMERA_PITCH,
     yaw = t and t.rotation and t.rotation.y or 0,
-    distance = horizontal / math.cos(math.rad(CAMERA_PITCH)),
+    distance = CAMERA_DISTANCE,
   })
 end
 
@@ -402,23 +401,6 @@ function onStartClicked(player)
   runActions(draft:start())
 end
 
-function onObjectDrop(color, obj)
-  if draft == nil or obj == nil then return end
-  local id = obj.getGUID()
-  if not draft:inPack(id) then return end
-  local picker = draft:picker()
-  if picker and color == picker and inPickArea(picker, obj.getPosition()) then
-    tryPick(color, obj)
-    return
-  end
-  -- Dropped anywhere else: send it back to the picker's hand.
-  Wait.time(function()
-    if obj ~= nil and draft:inPack(id) and picker and not isInHand(picker, obj) then
-      passPack(picker, { id })
-    end
-  end, 0.4)
-end
-
 function onSave()
   if draft == nil then return "" end
   local botList = {}
@@ -447,11 +429,18 @@ function onLoad(saved)
 
   Wait.frames(function()
     computeLayout()
-    ensureFogZones()
-    if not draft.started then placeZones() end
+    placeZones()
+    -- Buttons, menus and visibility are not kept across a reload: reapply them.
     for _, id in ipairs(draft.pack) do
       local card = getObjectFromGUID(id)
-      if card then attachMenu(card) end
+      if card then makePickable(card) end
+    end
+    layoutPack()
+    for _, color in ipairs(COLORS) do
+      for _, id in ipairs(draft.picks[color]) do
+        local card = getObjectFromGUID(id)
+        if card then card.setInvisibleTo(othersThan(color)) end
+      end
     end
     updateUI()
     for _, color in ipairs(COLORS) do frameCamera(color) end
