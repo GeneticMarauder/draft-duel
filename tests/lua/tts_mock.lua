@@ -74,7 +74,10 @@ end
 
 function Mock.setup(cubeSize)
   Mock.objects, Mock.waits, Mock.messages, Mock.ui = {}, {}, {}, {}
-  Mock.newDeck("c00001", cubeSize).pos = { x = -6, y = 1.2, z = 0 }
+  -- Measured in game on Table_RPG: deck centre y=2.01, 2.1 thick (felt at 0.96).
+  local cube = Mock.newDeck("c00001", cubeSize)
+  cube.pos = { x = -6, y = 2.01, z = 0 }
+  cube.getBounds = function() return { size = { x = 2.2, y = 2.1, z = 3.06 } } end
   Mock.newHand("a00001", "White", -19, 0)
   Mock.newHand("a00002", "Red", 19, 180)
   Mock.newObject("b00001", "Fog").value = "White"

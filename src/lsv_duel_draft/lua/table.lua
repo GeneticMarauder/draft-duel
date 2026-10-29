@@ -69,37 +69,38 @@ local function boundsSize(obj)
   return nil
 end
 
--- Sizes everything from the real card and table dimensions so the layout
--- fits whatever table this save ends up on.
+-- Same geometry as tts_save.py: each hidden zone is a low slab over its
+-- player's pick grid. The layout is sized to fit inside it.
+FOG_INNER, FOG_OUTER, FOG_WIDTH, FOG_HEIGHT, FOG_BOTTOM = 2.0, 17.5, 34.0, 0.8, 0.8
+
+-- Sizes the pick grid from the real card size so it fits inside the hidden
+-- zones; the hand sits just past the zone, near the table edge.
 function computeLayout()
   local w, h = 2.2, 3.1
   local size = boundsSize(cube)
   if size and size.x > 0.5 and size.z > 0.5 then w, h = size.x, size.z end
 
-  local tableHalfW, tableHalfD = 40, 26
-  local ok, tbl = pcall(function() return Tables.getTableObject() end)
-  local tsize = ok and boundsSize(tbl) or nil
-  if tsize then tableHalfW, tableHalfD = tsize.x / 2 - 0.5, tsize.z / 2 - 0.5 end
-
-  local tableY = 1
-  if cube then tableY = cube.getPosition().y end
+  -- Felt height: bottom of the cube deck (measured 0.96 on Table_RPG).
+  local tableY, feltY = 2, 0.96
+  if cube then
+    tableY = cube.getPosition().y
+    if size then feltY = tableY - size.y / 2 end
+  end
 
   local s, rowStart, outer, halfW = 1, 0, 0, 0
   while true do
     rowStart = h / 2 + 0.8 + s * h / 2
-    outer = rowStart + (PICK_ROWS - 1) * h * 1.06 * s + s * h / 2
-    halfW = PICK_COLS * w * 1.08 * s / 2
-    if (outer <= tableHalfD and halfW <= tableHalfW) or s <= 0.5 then break end
+    outer = rowStart + (PICK_ROWS - 1) * h * 1.04 * s + s * h / 2
+    halfW = PICK_COLS * w * 1.04 * s / 2
+    if (outer <= FOG_OUTER - 0.3 and halfW <= FOG_WIDTH / 2 - 0.3) or s <= 0.5 then break end
     s = s - 0.05
   end
 
   L = {
-    s = s, w = w, h = h, tableY = tableY,
-    dx = w * 1.08 * s, dz = h * 1.06 * s,
+    s = s, w = w, h = h, tableY = tableY, feltY = feltY,
+    dx = w * 1.04 * s, dz = h * 1.04 * s,
     rowStart = rowStart, outer = outer, halfW = halfW,
-    -- Past the table edge, like a normal TTS seat: the hand's real position
-    -- stays behind the camera, and players use TTS's on-screen hand display.
-    handZ = math.max(outer + 2.5, tableHalfD + 3.5),
+    handZ = FOG_OUTER + 2.5,
   }
 end
 
@@ -115,9 +116,6 @@ function placeZones()
   end
 end
 
--- Same geometry as tts_save.py; only used if a hidden zone is missing.
-FOG_INNER, FOG_OUTER, FOG_WIDTH, FOG_HEIGHT = 2.0, 40.0, 90.0, 14.0
-
 function ensureFogZones()
   for _, color in ipairs(COLORS) do
     if getObjectFromGUID(FOG_GUIDS[color]) == nil then
@@ -125,7 +123,7 @@ function ensureFogZones()
       printToAll("Hidden zone for " .. color .. " was missing; recreating it.", { 1, 0.6, 0.4 })
       spawnObject({
         type = "FogOfWarTrigger",
-        position = { x = 0, y = FOG_HEIGHT / 2 - 1, z = sign * (FOG_INNER + FOG_OUTER) / 2 },
+        position = { x = 0, y = FOG_BOTTOM + FOG_HEIGHT / 2, z = sign * (FOG_INNER + FOG_OUTER) / 2 },
         scale = { x = FOG_WIDTH, y = FOG_HEIGHT, z = FOG_OUTER - FOG_INNER },
         sound = false,
         callback_function = function(zone)
@@ -148,8 +146,8 @@ function printDebug()
   local tsize = ok and boundsSize(tbl) or nil
   printToAll("table=" .. tostring(ok and tbl ~= nil) .. " size=" .. fmt(tsize), { 0.8, 0.8, 0.8 })
   if L then
-    printToAll(string.format("card=%.2fx%.2f s=%.2f rowStart=%.1f outer=%.1f halfW=%.1f handZ=%.1f tableY=%.2f",
-      L.w, L.h, L.s, L.rowStart, L.outer, L.halfW, L.handZ, L.tableY), { 0.8, 0.8, 0.8 })
+    printToAll(string.format("card=%.2fx%.2f s=%.2f rowStart=%.1f outer=%.1f halfW=%.1f handZ=%.1f tableY=%.2f feltY=%.2f",
+      L.w, L.h, L.s, L.rowStart, L.outer, L.halfW, L.handZ, L.tableY, L.feltY), { 0.8, 0.8, 0.8 })
   end
   for _, color in ipairs(COLORS) do
     for kind, guids in pairs({ hand = HAND_GUIDS, fog = FOG_GUIDS }) do
@@ -165,9 +163,28 @@ function printDebug()
   end
 end
 
+-- Testing aid: make up to n random picks for human seats (bots keep picking on their own).
+function autoPick(n)
+  if n <= 0 or draft == nil or not draft.started or draft.finished then return end
+  local picker = draft:picker()
+  if picker and not bots[picker] and #draft.pack == DraftCore.PACK_SIZE then
+    local actions = draft:pick(picker, draft.pack[math.random(1, #draft.pack)])
+    if actions then
+      runActions(actions)
+      n = n - 1
+    end
+  end
+  Wait.time(function() autoPick(n) end, 0.4)
+end
+
 function onChat(message, player)
   if message == "!draftdebug" then
     printDebug()
+    return false
+  end
+  local n = message:match("^!draftauto%s*(%d*)$")
+  if n then
+    autoPick(tonumber(n) or 48)
     return false
   end
 end
@@ -179,7 +196,7 @@ function slotPosition(color, slot)
   local sign = sideSign(color)
   local x = (col - (PICK_COLS - 1) / 2) * L.dx * -sign
   local z = sign * (L.rowStart + row * L.dz)
-  return { x = x, y = L.tableY + 0.6, z = z }
+  return { x = x, y = L.feltY + 0.25, z = z }
 end
 
 function inPickArea(color, pos)
@@ -299,15 +316,11 @@ function runActions(actions)
   promptPicker()
 end
 
--- Tells a human picker it's their turn, or schedules the bot's pick.
+-- Schedules the bot's pick when it is a bot's turn. (Human pickers are
+-- prompted by the on-screen "Your pick!" panel that updateUI shows.)
 function promptPicker()
   local picker = draft:picker()
-  if picker == nil then return end
-  if bots[picker] then
-    scheduleBotPick(picker)
-  else
-    say(picker, "Your pick! Right-click a card in your hand > Draft this card.")
-  end
+  if picker and bots[picker] then scheduleBotPick(picker) end
 end
 
 -- Bot: takes a random card from its pack after a short pause.
@@ -339,8 +352,12 @@ CAMERA_PITCH = 55
 function frameCamera(color)
   if L == nil or not inList(COLORS, color) or not Player[color].seated then return end
   local t = handTransform(color)
-  local target = L.rowStart * 0.5
-  local horizontal = L.handZ + 1 - target
+  -- Aim at the middle of your own pick grid; the cube and discard pile sit
+  -- just beyond it.
+  local target = L.rowStart + (PICK_ROWS - 1) * L.dz / 2
+  -- The camera sits a little in front of the hand zone, so the hand's
+  -- in-world copy is behind it and only TTS's own hand display shows.
+  local horizontal = L.handZ - 2.5 - target
   Player[color].lookAt({
     position = { x = 0, y = L.tableY, z = sideSign(color) * target },
     pitch = CAMERA_PITCH,

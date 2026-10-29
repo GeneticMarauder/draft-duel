@@ -87,4 +87,6 @@ def test_save_structure() -> None:
         t = fog["Transform"]
         near = abs(t["posZ"]) - t["scaleZ"] / 2
         assert near > 1.6, "the middle strip (cube deck + discard pile at z=0) is outside both hidden zones"
-        assert fog["FogReverseHiding"] is False and fog["FogSeethrough"] is False
+        assert fog["FogReverseHiding"] is False and fog["FogSeethrough"] is True
+        bottom, top = t["posY"] - t["scaleY"] / 2, t["posY"] + t["scaleY"] / 2
+        assert bottom < 0.96 < top <= 2.0, "a thin slab on the felt (y=0.96), not a wall"

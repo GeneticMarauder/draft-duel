@@ -170,10 +170,12 @@ def test_table_adapter_runs_a_whole_draft(table_d: int) -> None:
 
     for color, hand_guid in (("White", "a00001"), ("Red", "a00002")):
         hand_z = abs(g.Mock.objects[hand_guid].pos.z)
-        assert hand_z > table_d / 2, "hand zone sits past the table edge, out of the camera's view"
+        from lsv_duel_draft.tts_save import FOG_OUTER as _FO
+
+        assert hand_z > _FO, "hand zone sits past the hidden zone, near the table edge"
         cam = g.Player[color].camera
         cam_back = abs(cam.position.z) + cam.distance * math.cos(math.radians(cam.pitch))
-        assert cam_back > hand_z, "camera is behind its own hand zone"
+        assert hand_z - 4 < cam_back < hand_z, "camera sits just in front of its hand zone, hiding it"
 
     holder = g.Mock.packHolder()
     other = "Red" if holder == "White" else "White"
@@ -195,10 +197,17 @@ def test_table_adapter_runs_a_whole_draft(table_d: int) -> None:
     assert all(o.locked for o in picks)
     # Each pick sits inside its owner's hidden zone (fixed geometry from the save)
     # and the middle strip (cube deck, discard pile) stays outside both zones.
-    from lsv_duel_draft.tts_save import FOG_INNER, FOG_OUTER, FOG_WIDTH
+    from lsv_duel_draft.tts_save import (
+        FOG_BOTTOM,
+        FOG_HEIGHT,
+        FOG_INNER,
+        FOG_OUTER,
+        FOG_WIDTH,
+    )
 
     for o in picks:
         assert FOG_INNER < abs(o.pos.z) < FOG_OUTER and abs(o.pos.x) < FOG_WIDTH / 2
+        assert FOG_BOTTOM < o.pos.y < FOG_BOTTOM + FOG_HEIGHT, "placed inside the zone, never dropped from above it"
     assert abs(g.Mock.objects["c00001"].pos.z) < FOG_INNER
 
 
@@ -303,3 +312,12 @@ def test_debug_command_and_missing_fog_zone_is_recreated() -> None:
     assert g.onChat("!draftdebug", g.Player.White) is False
     out = " | ".join(_lua_list(g.Mock.messages))
     assert "White fog" in out and "Red hand" in out and "MISSING" not in out
+
+
+def test_draftauto_command_finishes_the_draft_against_a_bot() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    _start_vs_bot(lua)
+    assert g.onChat("!draftauto", g.Player.White) is False
+    g.Mock.flush()
+    assert g.Mock.ui["statusText"].startswith("Draft complete")

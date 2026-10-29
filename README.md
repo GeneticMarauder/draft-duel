@@ -24,6 +24,10 @@ The starting player alternates every pack. 24 packs gives each player 48 cards.
    onto your side of the table.
 4. Your picks are laid out face-up in front of you, inside a hidden zone your opponent can't see.
    The discard pile in the middle is open: right-click it and choose **Search** to look through it.
+5. Hold **Alt** while hovering a card for a large preview. **Reset view** (top right) re-frames your camera.
+
+Testing helpers (type in chat): `!draftauto 10` makes 10 random picks for you; `!draftdebug` prints
+the table and zone geometry.
 
 ## Building and updating the cube
 

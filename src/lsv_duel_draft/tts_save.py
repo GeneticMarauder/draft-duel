@@ -85,11 +85,15 @@ def build_cube_deck(cards: list[Card], sheets: dict[int, Sheet], back_url: str) 
     }
 
 
+# TTS draws a hidden zone in its owner's color whatever this tint says: the
+# opponent sees a solid slab, the owner a translucent one. Keeping the slab
+# thin makes it read as a playmat under that player's picks.
 ZONE_TINT = {"White": {"r": 1.0, "g": 1.0, "b": 1.0, "a": 0.25},
              "Red": {"r": 0.86, "g": 0.1, "b": 0.09, "a": 0.25}}
-# Each hidden zone covers its whole half of the table, from just past the
-# middle strip (cube + discard pile at z = 0) out beyond the table edge.
-FOG_INNER, FOG_OUTER, FOG_WIDTH, FOG_HEIGHT = 2.0, 40.0, 90.0, 14.0
+# Each hidden zone is a thin slab lying on the felt (y=0.96 on Table_RPG,
+# measured in game) over its player's pick grid, from just past the middle
+# strip (cube + discard pile at z = 0) to just short of the hand zone.
+FOG_INNER, FOG_OUTER, FOG_WIDTH, FOG_HEIGHT, FOG_BOTTOM = 2.0, 17.5, 34.0, 0.8, 0.8
 
 
 def _zones() -> list[dict[str, Any]]:
@@ -103,7 +107,7 @@ def _zones() -> list[dict[str, Any]]:
         zones.append({
             "GUID": FOG_GUIDS[color], "Name": "FogOfWarTrigger",
             "Nickname": f"{color} picks (hidden)",
-            "Transform": _transform(z=sign * (FOG_INNER + FOG_OUTER) / 2, y=FOG_HEIGHT / 2 - 1,
+            "Transform": _transform(z=sign * (FOG_INNER + FOG_OUTER) / 2, y=FOG_BOTTOM + FOG_HEIGHT / 2,
                                     sx=FOG_WIDTH, sy=FOG_HEIGHT, sz=FOG_OUTER - FOG_INNER),
             "ColorDiffuse": ZONE_TINT[color],
             "Locked": True,
@@ -112,7 +116,7 @@ def _zones() -> list[dict[str, Any]]:
             "FogColor": color,
             "FogHidePointers": True,
             "FogReverseHiding": False,
-            "FogSeethrough": False,
+            "FogSeethrough": True,
         })
     return zones
 
