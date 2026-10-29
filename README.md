@@ -28,7 +28,11 @@ The starting player alternates every pack. 24 packs gives each player 48 cards.
    value, with lands last. Your deck is on your left and your sideboard on your right; drag cards
    between them. Drag basic lands out of the land bags along your edge; drop a basic on the
    sideboard to remove it. The panel at the bottom shows your deck and sideboard counts.
-6. Hold **Alt** while hovering a card for a large preview. **Reset view** (top right) re-frames your camera.
+6. When your deck is done (at least 40 cards), press **Ready to play**. Your deck becomes a face-down
+   library on your right and your sideboard a pile beside it (hidden from your opponent). Once both
+   players are ready, the libraries are shuffled, everyone draws 7, life counters are set to 20 and a
+   random player is chosen to go first.
+7. Hold **Alt** while hovering a card for a large preview. **Reset view** (top right) re-frames your camera.
 
 Testing helpers (type in chat): `!draftauto 10` makes 10 random picks for you; `!draftdebug` prints
 the table and zone geometry.

@@ -444,3 +444,72 @@ def test_deck_editor_cards_float_flat_in_cascade_order() -> None:
         ordered = sorted(column, key=lambda o: abs(o.pos.z))
         heights = [o.pos.y for o in ordered]
         assert heights == sorted(heights) and len(set(heights)) == len(heights)
+
+
+# ------------------------------------------------------------------ ready & play
+
+
+def _move_to_sideboard(lua: LuaRuntime, g, cards: list) -> None:
+    for c in cards:
+        c.setPosition(lua.table(x=10, y=2, z=-6))
+        g.onObjectDrop("White", c)
+    g.Mock.flush()
+
+
+def test_ready_refuses_a_deck_under_40_cards() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    white = [o for o in _deck_cards(g) if o.pos.z < 0]
+    _move_to_sideboard(lua, g, white[:9])  # 48 -> 39
+    g.onReadyClicked(g.Player.White)
+    g.Mock.flush()
+    assert any("needs at least 40" in m for m in _lua_list(g.Mock.messages))
+    assert g.Mock.ui["ready_White.active"] == "true", "still building"
+
+
+def test_ready_builds_library_and_sideboard_then_sets_up_the_game() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    white = [o for o in _deck_cards(g) if o.pos.z < 0]
+    _move_to_sideboard(lua, g, white[:3])  # deck 45, sideboard 3
+    g.onReadyClicked(g.Player.White)
+    g.Mock.flush()
+
+    decks = {o.name: o for o in g.Mock.objects.values() if o.kind == "Deck" and o.name.endswith(("library", "sideboard"))}
+    assert set(decks) == {"White library", "White sideboard", "Red library"}, "the bot readied up too"
+    lib, side = decks["White library"], decks["White sideboard"]
+    assert len(_lua_list(lib.cards)) == 45 - 7 and lib.shuffled == 1
+    assert len(_lua_list(side.cards)) == 3 and "Red" in set(_lua_list(side.invisibleTo))
+    assert lib.pos.z < 0 and side.pos.z < 0
+    assert g.Mock.dealt.White == 7 and g.Mock.dealt.Red == 7
+
+    counters = [o for o in g.Mock.objects.values() if o.kind == "Counter"]
+    assert sorted(c.name for c in counters) == ["Red life", "White life"]
+    assert all(c.counterValue == 20 for c in counters)
+    assert not [o for o in g.Mock.objects.values() if o.kind == "Infinite_Bag"], "land bags cleared away"
+    assert abs(g.Mock.objects["c00001"].pos.x) > 20, "cube moved off the play area"
+    assert g.Mock.ui["statusText"].startswith("Game on!")
+    assert g.Mock.ui["deck_White.active"] == "false" and g.Mock.ui["ready_White.active"] == "false"
+
+
+def test_deck_building_choices_survive_a_reload() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    white = [o for o in _deck_cards(g) if o.pos.z < 0]
+    _move_to_sideboard(lua, g, white[:5])
+    saved = g.onSave()
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert g.Mock.ui["deckText_White"].startswith("Deck 43 ") and g.Mock.ui["deckText_White"].endswith("Sideboard 5")
+
+
+def test_game_state_survives_a_reload() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    g.onReadyClicked(g.Player.White)
+    g.Mock.flush()
+    saved = g.onSave()
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert g.Mock.ui["statusText"].startswith("Game on!")
+    assert len([o for o in g.Mock.objects.values() if o.kind == "Counter"]) == 2, "no duplicate counters"

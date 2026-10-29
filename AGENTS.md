@@ -73,6 +73,10 @@ CubeCobra cube (default `LSVCube`). Two halves:
   lands sit at the player's edge; a basic dropped in the sideboard is destroyed.
   `tryObjectEnterContainer` stops cards merging into piles. Card GMNotes carry
   `{"id","cmc","land","basic"}`; basic-land card data comes from the `BASIC_LANDS_JSON` script header.
+  **Ready to play**: `readyUp` (min 40 cards; bot seats ready automatically) groups the deck into a
+  face-down library and the sideboard into a pile invisible to the opponent; when every seat is
+  ready, `startGame` removes the land bags, moves the cube and discard pile to the table edges,
+  shuffles, deals 7 to each hand and spawns 20-life counters. `ready`, `piles`, `playing` persist.
 - `ui.xml` — status bar, Start Draft button, Reset view, per-seat "your pick" prompts.
 
 **Privacy is per card, not hidden zones.** Pack cards use `setHiddenFrom(others)` (opponent sees

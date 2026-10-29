@@ -36,6 +36,10 @@ local L = nil           -- measured sizes
 local bots = {}         -- color -> true for seats that were empty at Start Draft
 local building = false  -- deck editor mode (after the draft)
 local deckCounts = {}   -- color -> { main, side, lands }
+local ready = {}        -- color -> true once their library and sideboard are gathered
+local piles = {}        -- color -> { library = guid, sideboard = guid }
+local playing = false   -- board set up for the game
+local firstPlayer = nil
 
 -- ---------------------------------------------------------------- helpers
 
@@ -187,6 +191,7 @@ function updateUI()
   local text = "Loading..."
   if draft then text = draft:status() end
   if building then text = "Deck building: your deck is on your left, your sideboard on your right." end
+  if playing then text = "Game on! " .. (firstPlayer or "?") .. " goes first. Good luck!" end
   UI.setValue("statusText", text)
   local started = draft and draft.started
   UI.setAttribute("startButton", "active", started and "false" or "true")
@@ -194,8 +199,11 @@ function updateUI()
   for _, color in ipairs(COLORS) do
     UI.setAttribute("prompt_" .. color, "active", (picker == color and not building) and "true" or "false")
     UI.setAttribute("deck_" .. color, "active", building and "true" or "false")
+    UI.setAttribute("ready_" .. color, "active", (building and not ready[color]) and "true" or "false")
     local c = deckCounts[color]
-    if c then
+    if ready[color] then
+      UI.setValue("deckText_" .. color, "Ready! Waiting for your opponent...")
+    elseif c then
       UI.setValue("deckText_" .. color, "Deck " .. c.main .. "  (" .. (c.main - c.lands) .. " spells + "
         .. c.lands .. " lands)      Sideboard " .. c.side)
     end
@@ -322,7 +330,7 @@ function runActions(actions)
     elseif a.type == "finished" then
       broadcastToAll("Draft complete! Build your deck: drag cards between your deck (left) and sideboard (right).",
         { 0.5, 1, 0.5 })
-      startDeckBuilding()
+      startDeckBuilding(true)
     end
     -- "pass" needs no work of its own: layoutPack moves the pack to its new holder.
   end
@@ -367,6 +375,12 @@ function frameCamera(color)
   -- While deck building, pull back to show both the deck and sideboard columns.
   local z, distance = PACK_ROW_Z + 1, CAMERA_DISTANCE
   if building then z, distance = DECK_TOP_Z + 6, BUILD_CAMERA_DISTANCE end
+  if playing then
+    -- Just in front of the hand zone (so only TTS's own hand display shows),
+    -- looking across your battlefield toward your opponent's.
+    z = PLAY_CAMERA_Z
+    distance = (HAND_Z - 2.5 - PLAY_CAMERA_Z) / math.cos(math.rad(CAMERA_PITCH))
+  end
   Player[color].lookAt({
     position = { x = 0, y = L.feltY, z = sideSign(color) * z },
     pitch = CAMERA_PITCH,
@@ -410,7 +424,7 @@ local function worldX(color, u) return u * -sideSign(color) end
 -- Re-sorts everything on a player's side into deck and sideboard columns.
 -- forceMain puts every card in the deck (used when the draft ends).
 function layoutDeck(color, forceMain)
-  if L == nil then return end
+  if L == nil or ready[color] then return end
   local sign = sideSign(color)
   local cols = { main = {}, side = {} }
   for _, area in ipairs({ "main", "side" }) do
@@ -490,18 +504,145 @@ function spawnBasicBags(color)
   end
 end
 
-function startDeckBuilding()
+-- forceMain: true when the draft has just ended (every pick starts in the
+-- deck); false when resuming after a reload (keep the player's choices).
+function startDeckBuilding(forceMain)
   building = true
   for _, color in ipairs(COLORS) do
     spawnBasicBags(color)
-    layoutDeck(color, true)
+    layoutDeck(color, forceMain)
     frameCamera(color)
   end
   updateUI()
 end
 
+-- ---------------------------------------------------------------- ready & play
+
+MIN_DECK = 40
+LIBRARY_U = 14         -- owner-relative x of the library (owner's right)
+SIDEBOARD_U = 18.5
+LIFE_U = -14           -- life counter on the owner's left
+PILE_Z = 13
+PLAY_CAMERA_Z = 5
+
+-- The cards a player currently has in their deck (left) and sideboard (right).
+function sideCards(color)
+  local sign = sideSign(color)
+  local main, side = {}, {}
+  for _, o in ipairs(getObjects()) do
+    if isDeckCard(o) and o.getPosition().z * sign > 1 then
+      if ownerU(color, o.getPosition().x) < 0 then table.insert(main, o) else table.insert(side, o) end
+    end
+  end
+  return main, side
+end
+
+-- Stacks cards face-down at a spot on the owner's side and groups them into one
+-- pile; the sideboard stays invisible to the opponent, the library shows its backs.
+local function gatherPile(color, cards, u, kind)
+  local sign = sideSign(color)
+  local pos = { x = worldX(color, u), y = L.feltY + 0.5, z = sign * PILE_Z }
+  piles[color] = piles[color] or {}
+  for k, o in ipairs(cards) do
+    makeUnpickable(o)
+    o.use_gravity = true
+    o.setScale({ x = 1, y = 1, z = 1 })
+    o.setRotation({ x = 0, y = seatYaw(color), z = 180 })
+    if kind == "library" then o.setInvisibleTo({}) else o.setInvisibleTo(othersThan(color)) end
+    o.setPosition({ x = pos.x, y = pos.y + k * 0.05, z = pos.z })
+  end
+  Wait.time(function()
+    local alive = {}
+    for _, o in ipairs(cards) do
+      if o ~= nil then table.insert(alive, o) end
+    end
+    local pile = alive[1]
+    if #alive >= 2 then
+      local groups = group(alive)
+      pile = groups and groups[1] or nil
+    end
+    if pile then
+      pile.setName(color .. " " .. kind)
+      if kind == "sideboard" then pile.setInvisibleTo(othersThan(color)) end
+      piles[color][kind] = pile.getGUID()
+    end
+  end, 0.6)
+end
+
+function readyUp(color)
+  if not building or ready[color] or L == nil then return end
+  layoutDeck(color, false)
+  local main, side = sideCards(color)
+  if #main < MIN_DECK and not bots[color] then
+    say(color, "Your deck has " .. #main .. " cards; a limited deck needs at least " .. MIN_DECK .. ".")
+    return
+  end
+  ready[color] = true
+  gatherPile(color, main, LIBRARY_U, "library")
+  if #side > 0 then gatherPile(color, side, SIDEBOARD_U, "sideboard") end
+  broadcastToAll(color .. " is ready to play.", { 0.6, 0.85, 1 })
+  -- Bot seats ready up with whatever is in their deck.
+  for _, c in ipairs(COLORS) do
+    if bots[c] and not ready[c] then readyUp(c) end
+  end
+  updateUI()
+  local all = true
+  for _, c in ipairs(COLORS) do
+    if not ready[c] then all = false end
+  end
+  if all then Wait.time(startGame, 1.5) end
+end
+
+function onReadyClicked(player)
+  if not inList(COLORS, player.color) then return end
+  readyUp(player.color)
+end
+
+-- Clears the middle of the table, shuffles both libraries, deals opening hands
+-- and sets life counters.
+function startGame()
+  if playing then return end
+  building = false
+  playing = true
+  for _, o in ipairs(getObjects()) do
+    local note = o.getGMNotes()
+    if note and note:find("^basic%-bag") then o.destruct() end
+  end
+  if cube then
+    cube.setPosition({ x = -28, y = L.tableY + 1, z = 0 })
+    cube.setLock(true)
+  end
+  local discard = discardGuid and getObjectFromGUID(discardGuid) or nil
+  if discard then
+    discard.setPosition({ x = 28, y = L.tableY + 1, z = 0 })
+    discard.setLock(true)
+  end
+  firstPlayer = COLORS[math.random(1, 2)]
+  for _, color in ipairs(COLORS) do
+    local lib = piles[color] and piles[color].library and getObjectFromGUID(piles[color].library) or nil
+    if lib then
+      lib.shuffle()
+      lib.deal(7, color)
+    end
+    local sign = sideSign(color)
+    spawnObject({
+      type = "Counter",
+      position = { x = worldX(color, LIFE_U), y = L.feltY + 0.5, z = sign * PILE_Z },
+      rotation = { x = 0, y = seatYaw(color), z = 0 },
+      callback_function = function(counter)
+        counter.Counter.setValue(20)
+        counter.setName(color .. " life")
+      end,
+    })
+    frameCamera(color)
+  end
+  broadcastToAll("Game on! " .. firstPlayer .. " goes first. Libraries are shuffled and you have drawn 7.",
+    { 0.5, 1, 0.5 })
+  updateUI()
+end
+
 function onObjectDrop(color, obj)
-  if not building or not inList(COLORS, color) or not isDeckCard(obj) then return end
+  if not building or ready[color] or not inList(COLORS, color) or not isDeckCard(obj) then return end
   local sign = sideSign(color)
   local p = obj.getPosition()
   -- Dropped in the middle or on the opponent's side: bring it back to your deck.
@@ -512,8 +653,12 @@ end
 -- Cards dropped on each other must not merge into a pile while deck building
 -- (the discard pile in the middle still stacks normally).
 function tryObjectEnterContainer(container, obj)
-  if building and isDeckCard(obj) and math.abs(obj.getPosition().z) > 1 then return false end
-  return true
+  if not building or not isDeckCard(obj) then return true end
+  local z = obj.getPosition().z
+  if math.abs(z) <= 1 then return true end
+  local owner = COLORS[2]
+  if z < 0 then owner = COLORS[1] end
+  return ready[owner] == true -- ready players' piles are grouped on purpose
 end
 
 -- ---------------------------------------------------------------- events
@@ -556,7 +701,8 @@ function onSave()
   if draft == nil then return "" end
   local botList = {}
   for color in pairs(bots) do table.insert(botList, color) end
-  return JSON.encode({ draft = draft:serialize(), discard = discardGuid, bots = botList })
+  return JSON.encode({ draft = draft:serialize(), discard = discardGuid, bots = botList,
+                       ready = ready, piles = piles, playing = playing, firstPlayer = firstPlayer })
 end
 
 function onLoad(saved)
@@ -574,6 +720,10 @@ function onLoad(saved)
     discardGuid = data.discard
     bots = {}
     for _, color in ipairs(data.bots or {}) do bots[color] = true end
+    ready = data.ready or {}
+    piles = data.piles or {}
+    playing = data.playing == true
+    firstPlayer = data.firstPlayer
   else
     draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48 })
   end
@@ -599,8 +749,11 @@ function onLoad(saved)
         end
       end
     end
-    if draft.finished then
-      startDeckBuilding()
+    if playing then
+      updateUI()
+      for _, color in ipairs(COLORS) do frameCamera(color) end
+    elseif draft.finished then
+      startDeckBuilding(false)
     else
       updateUI()
       for _, color in ipairs(COLORS) do frameCamera(color) end

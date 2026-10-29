@@ -13,6 +13,7 @@ function Mock.newObject(guid, kind)
               scale = { x = 1, y = 1, z = 1 }, menu = {}, locked = false, interactable = true }
   o.getGMNotes = function() return o.notes end
   o.getName = function() return o.name end
+  o.setName = function(n) o.name = n end
   o.destruct = function() Mock.objects[o.guid] = nil end
   o.getGUID = function() return o.guid end
   o.getPosition = function() return vec(o.pos) end
@@ -146,10 +147,25 @@ Tables = { getTableObject = function()
   local t = { getBounds = function() return { size = { x = Mock.tableW or 60, y = 1, z = Mock.tableD or 40 } } end }
   return t
 end }
+-- Grouping cards makes one Deck object holding them (like the G key).
 group = function(objs)
-  local first = objs[1]
-  for i = 2, #objs do Mock.objects[objs[i].guid] = nil end
-  return { first }
+  Mock.spawned = (Mock.spawned or 0) + 1
+  local d = Mock.newObject(string.format("9%05x", Mock.spawned), "Deck")
+  d.pos = objs[1].pos
+  d.rot = objs[1].rot
+  d.cards = {}
+  for _, o in ipairs(objs) do
+    table.insert(d.cards, o.guid)
+    Mock.objects[o.guid] = nil
+  end
+  d.shuffled = 0
+  d.shuffle = function() d.shuffled = d.shuffled + 1 end
+  d.deal = function(n, color)
+    Mock.dealt = Mock.dealt or {}
+    Mock.dealt[color] = (Mock.dealt[color] or 0) + n
+    for _ = 1, n do table.remove(d.cards, 1) end
+  end
+  return { d }
 end
 broadcastToAll = function(msg) table.insert(Mock.messages, msg) end
 broadcastToColor = function(msg, color) table.insert(Mock.messages, color .. ": " .. msg) end
@@ -183,6 +199,9 @@ spawnObject = function(params)
   local o = Mock.newObject(string.format("f%05x", Mock.spawned), params.type)
   o.setPosition(params.position)
   if params.scale then o.setScale(params.scale) end
+  if params.type == "Counter" then
+    o.Counter = { setValue = function(v) o.counterValue = v end }
+  end
   if params.callback_function then params.callback_function(o) end
   return o
 end

@@ -24,3 +24,7 @@
     <Text fontSize="15" color="#FFFFFF" alignment="MiddleCenter">Drag cards left (deck) or right (sideboard). Drag basics out of the land bags; drop a basic on the sideboard to remove it.</Text>
   </VerticalLayout>
 </Panel>
+<Button id="ready_White" visibility="White" active="false" rectAlignment="LowerRight" offsetXY="-24 36" width="240" height="66" fontSize="22"
+        textColor="#FFFFFF" colors="#2E7D32|#388E3C|#1B5E20|#555555" onClick="onReadyClicked">Ready to play</Button>
+<Button id="ready_Red" visibility="Red" active="false" rectAlignment="LowerRight" offsetXY="-24 36" width="240" height="66" fontSize="22"
+        textColor="#FFFFFF" colors="#2E7D32|#388E3C|#1B5E20|#555555" onClick="onReadyClicked">Ready to play</Button>
