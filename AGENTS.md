@@ -95,14 +95,31 @@ CubeCobra cube (default `LSVCube`). Two halves:
   **Booster Tutor** (card named `BOOSTER_TUTOR`, right-click "Open a booster"): takes 15 cards from
   the undrafted cube into a face-up, locked row across the middle (revealed to all), each with a
   **Take** button / menu. Only the opener can take; the card goes to their hand, the rest are put
-  back face-down into the cube, which is shuffled. One booster open at a time; `booster` persists.
-- `ui.xml` — status bar (hidden once the game starts), Start Draft button, Reset view, per-seat "your pick" prompts.
+  back face-down into the cube (`returnToCube` unlocks the locked cube around `putObject`), which is
+  shuffled. One booster open at a time; `booster` persists. The taken card's GUID goes in `tutored`:
+  it only lasts one game.
+  **Next game** (top-centre button while `playing`; second click within 4 s confirms) → `nextGame`:
+  piles holding owned cards are emptied (all but the last card taken out; the last stays as a plain
+  card), then every card is routed by GUID — `owned[color].main/side` (recorded at `readyUp`) back to
+  that player's deck/sideboard area, `tutored` back into the cube; tokens and "<color> life" counters
+  are destroyed. `building` is set first so `tryObjectEnterContainer` stops returning cards merging into
+  piles (the cube is always allowed); returning cards float (gravity off) spread over the columns.
+  `gameNumber` increments and the deck editor reopens ("Sideboarding for game N");
+  Ready to play starts the next game via the same `readyUp`/`startGame`. `owned`, `tutored` and
+  `gameNumber` persist and follow DFC flips in `onObjectStateChange`.
+- `ui.xml` — status bar (hidden once the game starts), Start Draft button, Reset view, Next game, per-seat "your pick" prompts.
 
 **Privacy is per card, not hidden zones** (re-applied on every pickup/drop/state change via `rehide`, plus `!hide`). Pack cards use `setHiddenFrom(others)` (opponent sees
 backs); picks use `setInvisibleTo(others)`. Hidden zones were dropped: TTS draws them as solid
 blocks in the owner's color and ignores their tint. Hand zones exist only to define seats.
 
 **Verified in game (Table_RPG):** felt top y≈0.96, table bounds 64 x 43.
+- XML UI in the top-right corner (under TTS's player list) does not receive clicks — keep buttons elsewhere
+  (Reset view there is affected too). `UI.setValue` does not relabel a Button; use `setAttribute(id, "text", …)`.
+- Cards dropped/placed on each other merge into a deck unless `tryObjectEnterContainer` says no; a locked
+  deck refuses `putObject`.
+- Testing tip: `/execute <lua>` in chat runs in Global (host only; lines over ~240 chars get cut). After
+  typing in chat, the next click on the table only takes focus away from the chat box.
 
 **Tests** — `tests/test_draft_lua.py` runs the real Lua under `lupa` against `tests/lua/tts_mock.lua`
 (a mock of the TTS API); keep TTS-specific calls inside the mock's surface or extend the mock.

@@ -770,3 +770,73 @@ def test_open_booster_survives_a_reload() -> None:
     pack[0].menu[1].fn("Red")
     g.Mock.flush()
     assert pack[0].guid in {o.guid for o in _lua_list(g.Player.Red.getHandObjects())}
+
+
+# ------------------------------------------------------------------ next game
+
+
+def _click_next_game(g, color: str = "White") -> None:
+    g.onNextGameClicked(g.Player[color])
+    g.onNextGameClicked(g.Player[color])  # the second click confirms
+    g.Mock.flush()
+
+
+def test_next_game_returns_every_card_for_sideboarding_and_drops_booster_picks() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    white = [o for o in _deck_cards(g) if o.pos.z < 0]
+    _move_to_sideboard(lua, g, white[:3])  # deck 45, sideboard 3
+    g.onReadyClicked(g.Player.White)
+    g.Mock.flush()
+    assert g.Mock.ui["nextGameButton.active"] == "true"
+    cube = g.Mock.objects["c00001"]
+
+    # Mid-game: a card on the battlefield, a token beside it, and a Booster Tutor pick in hand.
+    lib = next(o for o in g.Mock.objects.values() if o.kind == "Deck" and o.name == "White library")
+    played = lib.takeObject(lua.table(position=lua.table(x=0, y=1, z=-6)))
+    g.createToken("White", "Treasure", played)
+    g.openBooster("White")
+    g.Mock.flush()
+    pick = _booster(g)[0]
+    g.onBoosterTake(pick, "White")
+    g.Mock.flush()
+    assert pick.guid in {o.guid for o in _lua_list(g.Player.White.getHandObjects())}
+    cube_before = len(cube.cards)
+
+    g.onNextGameClicked(g.Player.White)
+    g.onNextGameClicked(g.Player.White)
+    # While cards are on their way back they must not merge into piles (found in TTS).
+    in_hand = _lua_list(g.Player.White.getHandObjects())
+    assert g.tryObjectEnterContainer(in_hand[0], played) is False
+    g.Mock.flush()
+    assert g.Mock.ui["statusText"].startswith("Sideboarding for game 2")
+    assert g.Mock.ui["deckText_White"].startswith("Deck 45 ") and g.Mock.ui["deckText_White"].endswith("Sideboard 3")
+    assert g.Mock.ui["deckText_Red"].startswith("Deck 48 ")
+    assert g.Mock.objects[pick.guid] is None and len(cube.cards) == cube_before + 1, "the pick went back to the cube"
+    assert _tokens(g, "Treasure") == [], "tokens are removed"
+    assert not [o for o in g.Mock.objects.values() if o.kind == "Counter"], "life counters are removed"
+    assert not [o for o in g.Mock.objects.values() if o.kind == "Deck" and o.guid != "c00001"
+                and o.name.endswith(("library", "sideboard"))], "libraries and sideboards are emptied"
+    mine = [o for o in _deck_cards(g) if o.pos.z < 0]
+    assert len(mine) == 48 and all(not o.locked and _hidden_from_red(o) for o in mine)
+    assert g.Mock.ui["nextGameButton.active"] == "false" and g.Mock.ui["ready_White.active"] == "true"
+
+    saved = g.onSave()  # a reload during sideboarding keeps the game number
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert g.Mock.ui["statusText"].startswith("Sideboarding for game 2")
+
+    g.onReadyClicked(g.Player.White)  # game 2 starts as before
+    g.Mock.flush()
+    assert g.Mock.dealt.White == 14 and g.Mock.ui["statusPanel.active"] == "false"
+    assert len([o for o in g.Mock.objects.values() if o.kind == "Counter"]) == 2
+
+
+def test_next_game_needs_a_confirming_second_click() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    g.onNextGameClicked(g.Player.White)
+    g.Mock.flush()  # the confirmation times out
+    g.onNextGameClicked(g.Player.White)
+    assert g.Mock.ui["nextGameButton.text"] == "Click again to confirm"
+    assert g.Mock.ui["statusPanel.active"] == "false", "still playing after single clicks"

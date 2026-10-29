@@ -41,6 +41,9 @@ local piles = {}        -- color -> { library = guid, sideboard = guid }
 local playing = false   -- board set up for the game
 local firstPlayer = nil
 local booster = nil      -- { color = opener, cards = { guid, ... } } while Booster Tutor's pack is open
+local owned = {}         -- color -> { main = { guid, ... }, side = { guid, ... } } as of their last Ready
+local tutored = {}       -- guids of cards taken with Booster Tutor this game (they leave after it)
+local gameNumber = 1
 
 -- ---------------------------------------------------------------- helpers
 
@@ -197,11 +200,15 @@ function updateUI()
   local text = "Loading..."
   if draft then text = draft:status() end
   if building then text = "Deck building: your deck is on your left, your sideboard on your right." end
+  if building and gameNumber > 1 then
+    text = "Sideboarding for game " .. gameNumber .. ": your deck is on your left, your sideboard on your right."
+  end
   if playing then text = "Game on! " .. (firstPlayer or "?") .. " goes first. Good luck!" end
   UI.setValue("statusText", text)
   -- Once the game starts the bar would only sit over the opponent's side;
   -- who goes first is announced in a broadcast (and the chat log) instead.
   UI.setAttribute("statusPanel", "active", playing and "false" or "true")
+  UI.setAttribute("nextGameButton", "active", playing and "true" or "false")
   local started = draft and draft.started
   UI.setAttribute("startButton", "active", started and "false" or "true")
   local picker = draft and draft:picker() or nil
@@ -619,6 +626,10 @@ function readyUp(color)
     return
   end
   ready[color] = true
+  -- Who owns what, so Next game can bring every card back to the right player.
+  owned[color] = { main = {}, side = {} }
+  for _, o in ipairs(main) do table.insert(owned[color].main, o.getGUID()) end
+  for _, o in ipairs(side) do table.insert(owned[color].side, o.getGUID()) end
   gatherPile(color, main, LIBRARY_U, "library")
   if #side > 0 then gatherPile(color, side, SIDEBOARD_U, "sideboard") end
   broadcastToAll(color .. " is ready to play.", { 0.6, 0.85, 1 })
@@ -885,41 +896,179 @@ function onBoosterTake(card, color)
   takeFromBooster(color, card)
 end
 
--- The opener takes one card into their hand; the rest go back into the cube.
-function takeFromBooster(color, card)
-  if card == nil or not inBooster(card) then return end
-  if color ~= booster.color then
-    say(color, "Only " .. booster.color .. " can take a card from this booster.")
-    return
+-- Puts cards back face-down into the cube and reshuffles it. The cube is
+-- locked during the game, and a locked deck refuses putObject.
+function returnToCube(cards)
+  if cube == nil or #cards == 0 then return end
+  cube.setLock(false)
+  for _, o in ipairs(cards) do
+    o.clearButtons()
+    o.clearContextMenu()
+    o.setLock(false)
+    o.setScale({ x = 1, y = 1, z = 1 })
+    o.setHiddenFrom({})
+    o.setInvisibleTo({})
+    o.setRotation(cube.getRotation()) -- face-down like the cube, so it stays hidden there
+    cube.putObject(o)
   end
-  local rest = booster.cards
-  local taken = card.getGUID()
-  booster = nil
-  -- The cube is locked during the game, and a locked deck refuses putObject.
-  if cube then cube.setLock(false) end
-  for _, id in ipairs(rest) do
-    local o = getObjectFromGUID(id)
-    if o then
-      o.clearButtons()
-      o.clearContextMenu()
-      o.setLock(false)
-      o.setScale({ x = 1, y = 1, z = 1 })
-      if id ~= taken and cube then
-        o.setRotation(cube.getRotation()) -- face-down like the cube, so it stays hidden there
-        cube.putObject(o)
-      end
-    end
-  end
-  card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
-  card.setPosition(Player[color].getHandTransform().position)
-  addPlayMenu(card)
   Wait.time(function()
     if cube then
       cube.shuffle()
       cube.setLock(true)
     end
   end, 1)
-  broadcastToAll(color .. " takes " .. card.getName() .. " from the booster.", { 0.6, 0.85, 1 })
+end
+
+-- The opener takes one card into their hand; the rest go back into the cube.
+-- The taken card is only theirs for this game (see nextGame).
+function takeFromBooster(color, card)
+  if card == nil or not inBooster(card) then return end
+  if color ~= booster.color then
+    say(color, "Only " .. booster.color .. " can take a card from this booster.")
+    return
+  end
+  local taken = card.getGUID()
+  local rest = {}
+  for _, id in ipairs(booster.cards) do
+    local o = getObjectFromGUID(id)
+    if o and id ~= taken then table.insert(rest, o) end
+  end
+  booster = nil
+  returnToCube(rest)
+  table.insert(tutored, taken)
+  card.clearButtons()
+  card.clearContextMenu()
+  card.setLock(false)
+  card.setScale({ x = 1, y = 1, z = 1 })
+  card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
+  card.setPosition(Player[color].getHandTransform().position)
+  addPlayMenu(card)
+  broadcastToAll(color .. " takes " .. card.getName() .. " from the booster (it goes back to the cube after this game).",
+    { 0.6, 0.85, 1 })
+end
+
+-- ---------------------------------------------------------------- next game
+-- "Next game" (click twice to confirm) ends the current game and starts a
+-- sideboarding phase: every card a player owns comes back from their library,
+-- hand, battlefield and piles into the deck editor, deck and sideboard as they
+-- were at Ready. Tokens and life counters are removed and Booster Tutor picks
+-- go back into the cube. Ready to play then starts the next game.
+
+local nextGameArmed = nil  -- color that clicked Next game once and must confirm
+
+function onNextGameClicked(player)
+  local color = player.color
+  if not playing or not inList(COLORS, color) then return end
+  if nextGameArmed ~= color then
+    nextGameArmed = color
+    UI.setAttribute("nextGameButton", "text", "Click again to confirm")
+    Wait.time(function()
+      if nextGameArmed == color then
+        nextGameArmed = nil
+        UI.setAttribute("nextGameButton", "text", "Next game")
+      end
+    end, 4)
+    return
+  end
+  nextGameArmed = nil
+  UI.setAttribute("nextGameButton", "text", "Next game") -- (UI.setValue does not relabel a Button)
+  nextGame()
+end
+
+-- Where a card goes between games: "cube", or its owner and "main"/"side".
+local function routeOf(guid)
+  if inList(tutored, guid) then return "cube" end
+  for _, color in ipairs(COLORS) do
+    local o = owned[color]
+    if o and inList(o.main, guid) then return color, "main" end
+    if o and inList(o.side, guid) then return color, "side" end
+  end
+  return nil
+end
+
+-- Moves a card to its owner's deck or sideboard area (layoutDeck tidies it up).
+-- k spreads the cards over the columns; they float, so they never land on each other.
+local function sendToEditor(card, color, area, k)
+  local a = AREAS[area]
+  card.setInvisibleTo(othersThan(color)) -- before it moves, so it is never seen
+  card.setHiddenFrom({})
+  card.clearButtons()
+  card.clearContextMenu()
+  card.setLock(false)
+  card.setScale({ x = a.scale, y = 1, z = a.scale })
+  card.use_gravity = false
+  card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
+  card.setPosition({
+    x = worldX(color, a.u0 + (k % DECK_COLS) * a.step),
+    y = L.feltY + 0.5 + k * DECK_LAYER,
+    z = sideSign(color) * (DECK_TOP_Z + math.floor(k / DECK_COLS) * a.cascade),
+  })
+end
+
+function nextGame()
+  if not playing or L == nil then return end
+  -- Deck-building rules from here on: tryObjectEnterContainer stops the cards
+  -- coming back from merging into piles again as they are moved.
+  playing = false
+  building = true
+  ready = {}
+  piles = {}
+  firstPlayer = nil
+  gameNumber = gameNumber + 1
+  if booster then
+    local open = {}
+    for _, id in ipairs(booster.cards) do
+      local o = getObjectFromGUID(id)
+      if o then table.insert(open, o) end
+    end
+    booster = nil
+    returnToCube(open)
+  end
+  -- Empty every pile holding someone's cards (library, sideboard, graveyard...).
+  -- All but the last card are taken out; the last is left as a plain card.
+  for _, d in ipairs(getObjects()) do
+    if d.type == "Deck" and d.getGUID() ~= CUBE_GUID then
+      local entries = d.getObjects()
+      local ours = false
+      for _, e in ipairs(entries) do
+        if routeOf(e.guid) then ours = true end
+      end
+      if ours then
+        for i = 1, #entries - 1 do
+          local p = d.getPosition()
+          d.takeObject({ guid = entries[i].guid, position = { x = p.x, y = p.y + 2 + i * 0.05, z = p.z },
+                         smooth = false })
+        end
+      end
+    end
+  end
+  Wait.time(function()
+    local toCube = {}
+    local count = {}  -- "<color><area>" -> cards sent there so far
+    for _, o in ipairs(getObjects()) do
+      if o.type == "Card" then
+        local info = cardInfo(o)
+        local color, area = routeOf(o.getGUID())
+        if info.token then
+          o.destruct()
+        elseif color == "cube" then
+          table.insert(toCube, o)
+        elseif color then
+          local key = color .. area
+          count[key] = (count[key] or 0) + 1
+          sendToEditor(o, color, area, count[key] - 1)
+        end
+      elseif o.type == "Counter" and o.getName():find(" life$") then
+        o.destruct()
+      end
+    end
+    returnToCube(toCube)
+    tutored = {}
+    tokenFan = {}
+    broadcastToAll("Game over. Sideboard for game " .. gameNumber
+      .. ": drag cards between your deck (left) and sideboard (right), then press Ready to play.", { 0.5, 1, 0.5 })
+    Wait.time(function() startDeckBuilding(false) end, 0.5)
+  end, 0.5)
 end
 
 -- ---------------------------------------------------------------- privacy
@@ -974,6 +1123,18 @@ function onObjectStateChange(obj, oldGuid)
       end
     end
   end
+  local lists = { tutored }
+  for _, color in ipairs(COLORS) do
+    if owned[color] then
+      table.insert(lists, owned[color].main)
+      table.insert(lists, owned[color].side)
+    end
+  end
+  for _, list in ipairs(lists) do
+    for i, id in ipairs(list) do
+      if id == oldGuid then list[i] = obj.getGUID() end
+    end
+  end
   rehide(obj)
   if playing then addPlayMenu(obj) end
 end
@@ -992,6 +1153,8 @@ end
 -- (the discard pile in the middle still stacks normally).
 function tryObjectEnterContainer(container, obj)
   if not building or not isDeckCard(obj) then return true end
+  -- Booster Tutor picks go back into the cube when Next game starts the deck editor.
+  if container.getGUID() == CUBE_GUID then return true end
   local z = obj.getPosition().z
   if math.abs(z) <= 1 then return true end
   local owner = COLORS[2]
@@ -1041,7 +1204,7 @@ function onSave()
   for color in pairs(bots) do table.insert(botList, color) end
   return JSON.encode({ draft = draft:serialize(), discard = discardGuid, bots = botList,
                        ready = ready, piles = piles, playing = playing, firstPlayer = firstPlayer,
-                       booster = booster })
+                       booster = booster, owned = owned, tutored = tutored, gameNumber = gameNumber })
 end
 
 function onLoad(saved)
@@ -1064,6 +1227,9 @@ function onLoad(saved)
     playing = data.playing == true
     firstPlayer = data.firstPlayer
     booster = data.booster
+    owned = data.owned or {}
+    tutored = data.tutored or {}
+    gameNumber = data.gameNumber or 1
   else
     draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48 })
   end

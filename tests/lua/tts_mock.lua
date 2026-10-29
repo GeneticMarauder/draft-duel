@@ -47,6 +47,7 @@ function Mock.newDeck(guid, count)
   d.getQuantity = function() return #d.cards end
   d.putObject = function(obj)
     if d.locked then return nil end -- like TTS: a locked deck refuses new cards
+    if tryObjectEnterContainer and tryObjectEnterContainer(d, obj) == false then return nil end
     table.insert(d.cards, obj.guid)
     Mock.objects[obj.guid] = nil
   end
@@ -154,23 +155,57 @@ Tables = { getTableObject = function()
   local t = { getBounds = function() return { size = { x = Mock.tableW or 60, y = 1, z = Mock.tableD or 40 } } end }
   return t
 end }
--- Grouping cards makes one Deck object holding them (like the G key).
+-- Grouping cards makes one Deck object holding them (like the G key). The deck
+-- keeps the card objects (and GUIDs), so they can be dealt or taken back out.
 group = function(objs)
   Mock.spawned = (Mock.spawned or 0) + 1
   local d = Mock.newObject(string.format("9%05x", Mock.spawned), "Deck")
   d.pos = objs[1].pos
   d.rot = objs[1].rot
-  d.cards = {}
+  d.cards, d.stored = {}, {}
   for _, o in ipairs(objs) do
     table.insert(d.cards, o.guid)
+    d.stored[o.guid] = o
     Mock.objects[o.guid] = nil
   end
   d.shuffled = 0
   d.shuffle = function() d.shuffled = d.shuffled + 1 end
+  d.getQuantity = function() return #d.cards end
+  d.getObjects = function()
+    local out = {}
+    for i, g in ipairs(d.cards) do out[i] = { guid = g, index = i - 1, name = d.stored[g].name } end
+    return out
+  end
+  -- Takes card i out; like TTS, a deck left with one card becomes that card.
+  local function take(i, pos)
+    local g = table.remove(d.cards, i)
+    local o = d.stored[g]
+    d.stored[g] = nil
+    Mock.objects[g] = o
+    if pos then o.setPosition(pos) end
+    if #d.cards == 1 then
+      local last = d.stored[d.cards[1]]
+      last.pos = d.pos
+      Mock.objects[last.guid] = last
+      d.cards, d.stored = {}, {}
+      Mock.objects[d.guid] = nil
+    end
+    return o
+  end
+  d.takeObject = function(params)
+    local idx = 1
+    for i, g in ipairs(d.cards) do
+      if g == params.guid then idx = i end
+    end
+    return take(idx, params.position)
+  end
   d.deal = function(n, color)
     Mock.dealt = Mock.dealt or {}
     Mock.dealt[color] = (Mock.dealt[color] or 0) + n
-    for _ = 1, n do table.remove(d.cards, 1) end
+    local hand = Player[color].getHandTransform().position
+    for _ = 1, n do
+      if #d.cards > 0 then take(1, hand) end
+    end
   end
   return { d }
 end
