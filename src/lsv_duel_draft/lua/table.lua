@@ -710,15 +710,16 @@ end
 -- lost when a card goes into a deck or the game reloads, so they are re-added
 -- whenever a card appears.
 
-TOKEN_STEP = 2.6       -- tokens made by one card fan out to its owner's right...
-TOKEN_FAN = 5          -- ...this many, then start again beside the card
-TOKEN_HOME_U = -8      -- where tokens from a card in hand land (owner-relative)
+TOKEN_GAP = 0.3        -- space kept between a new token and the cards around it
+TOKEN_HOME_U = -8      -- where tokens from a card in hand go (owner-relative)
 TOKEN_HOME_Z = 8
+TOKEN_Z_MIN = 1.8      -- a token lands on its owner's battlefield: this far from the middle line...
+TOKEN_Z_MAX = 16       -- ...and no further (the hand zone starts beyond)
+TOKEN_X_MAX = 29       -- and inside the table's edges
 -- One of a kind: creating it again moves the existing card to you.
 UNIQUE_TOKENS = { ["The Monarch"] = true, ["Day // Night"] = true }
 
 local tokenData = { tokens = {}, makers = {} }
-local tokenFan = {}    -- source guid (or "home_<color>") -> tokens made beside it so far
 
 function loadTokens()
   if TOKENS_JSON then tokenData = JSON.decode(TOKENS_JSON) or tokenData end
@@ -762,18 +763,58 @@ local function inSomeHand(obj)
   return false
 end
 
--- Next spot beside the source card, fanning out to the owner's right.
-local function tokenSpot(color, source)
-  local key, x, z
+-- True when a card-sized spot at (x, z) touches no card, pile or counter
+-- (other than `ignore`). Bounds follow rotation, so tapped cards count as wide.
+local function spotIsFree(x, z, ignore)
+  for _, o in ipairs(getObjects()) do
+    if o ~= ignore and (o.type == "Card" or o.type == "Deck" or o.type == "Counter") then
+      local p = o.getPosition()
+      local b = boundsSize(o) or { x = L.w, z = L.h }
+      if math.abs(p.x - x) < (b.x + L.w) / 2 + TOKEN_GAP - 0.01
+          and math.abs(p.z - z) < (b.z + L.h) / 2 + TOKEN_GAP - 0.01 then
+        return false
+      end
+    end
+  end
+  return true
+end
+
+-- Candidate offsets around the anchor, in card steps (du to the owner's right,
+-- dv toward the owner's hand), nearest first: along the row to the right, then
+-- the left, then the next row.
+local TOKEN_OFFSETS = {}
+for dv = 0, 3 do
+  for du = -6, 6 do
+    if du ~= 0 or dv ~= 0 then
+      local cost = (du > 0 and du or -du + 1.5) + dv * 3
+      table.insert(TOKEN_OFFSETS, { du = du, dv = dv, cost = cost })
+    end
+  end
+end
+table.sort(TOKEN_OFFSETS, function(a, b) return a.cost < b.cost end)
+
+-- The nearest free spot on the owner's battlefield beside the source card (or
+-- beside their "home" spot when the card is in hand).
+local function tokenSpot(color, source, ignore)
+  local sign = sideSign(color)
+  local ax, az
   if source ~= nil and not inSomeHand(source) then
     local p = source.getPosition()
-    key, x, z = source.getGUID(), p.x, p.z
+    ax, az = p.x, p.z
   else
-    key, x, z = "home_" .. color, worldX(color, TOKEN_HOME_U), sideSign(color) * TOKEN_HOME_Z
+    ax, az = worldX(color, TOKEN_HOME_U), sign * TOKEN_HOME_Z
   end
-  local k = (tokenFan[key] or 0) % TOKEN_FAN + 1
-  tokenFan[key] = k
-  return { x = x + worldX(color, k * TOKEN_STEP), y = L.feltY + 0.5 + k * 0.1, z = z }
+  local su, sv = L.w + TOKEN_GAP, L.h + TOKEN_GAP
+  for _, off in ipairs(TOKEN_OFFSETS) do
+    local x = ax + worldX(color, off.du * su)
+    local z = az + sign * off.dv * sv
+    if math.abs(x) <= TOKEN_X_MAX and z * sign >= TOKEN_Z_MIN and z * sign <= TOKEN_Z_MAX
+        and spotIsFree(x, z, ignore) then
+      return { x = x, y = L.feltY + 0.3, z = z }
+    end
+  end
+  -- Battlefield full: put it on top of the spot to the card's right.
+  return { x = ax + worldX(color, su), y = L.feltY + 1, z = az }
 end
 
 local function findToken(label)
@@ -790,18 +831,17 @@ function createToken(color, label, source)
     say(color, "Sit at White or Red to create tokens.")
     return
   end
-  local spot = tokenSpot(color, source)
   local rot = { x = 0, y = seatYaw(color), z = 0 }
   if UNIQUE_TOKENS[label] then
     local existing = findToken(label)
     if existing then
-      existing.setPosition(spot)
+      existing.setPosition(tokenSpot(color, source, existing))
       existing.setRotation(rot)
       broadcastToAll(color .. " takes " .. label .. ".", { 0.6, 0.85, 1 })
       return
     end
   end
-  spawnObjectData({ data = data, position = spot, rotation = rot })
+  spawnObjectData({ data = data, position = tokenSpot(color, source), rotation = rot })
 end
 
 -- Drawn, dealt and searched-for cards are new objects with no menu yet.
@@ -1064,7 +1104,6 @@ function nextGame()
     end
     returnToCube(toCube)
     tutored = {}
-    tokenFan = {}
     broadcastToAll("Game over. Sideboard for game " .. gameNumber
       .. ": drag cards between your deck (left) and sideboard (right), then press Ready to play.", { 0.5, 1, 0.5 })
     Wait.time(function() startDeckBuilding(false) end, 0.5)

@@ -651,18 +651,42 @@ def test_right_click_creates_the_cards_tokens_beside_it() -> None:
     labels = [item.label for item in _lua_list(card.menu)]
     assert labels == ["Create Treasure", "Create Goblin Shaman 2/2 Red"]
 
-    for _ in range(3):
+    card.menu[1].fn("White")
+    g.Mock.flush()
+    (first,) = _tokens(g, "Treasure")
+    assert first.name == "Treasure" and first.rot.z == 0, "face-up"
+    assert first.pos.x > card.pos.x and abs(first.pos.z - card.pos.z) < 0.01, "first one on White's right"
+
+    for _ in range(2):
         card.menu[1].fn("White")
     g.Mock.flush()
     treasures = _tokens(g, "Treasure")
-    assert len(treasures) == 3 and all(t.name == "Treasure" for t in treasures)
-    xs = sorted(t.pos.x for t in treasures)
-    assert xs[0] > card.pos.x, "tokens land on White's right of the card"
-    assert all(b - a >= 2.2 for a, b in itertools.pairwise(xs)), "tokens fan out instead of stacking"
-    assert all(abs(t.pos.z - card.pos.z) < 0.01 and t.rot.z == 0 for t in treasures)
+    assert len(treasures) == 3
+    _assert_no_overlap(g, [card, *treasures])
 
-    plain = _maker(lua, "m00002", "not-a-maker", x=4, z=-6)
+    plain = _maker(lua, "m00002", "not-a-maker", x=12, z=-6)
     assert len(_lua_list(plain.menu)) == 0, "cards that make no tokens get no menu"
+
+
+def _assert_no_overlap(g, objs: list) -> None:
+    for a, b in itertools.combinations(objs, 2):
+        apart = abs(a.pos.x - b.pos.x) >= 2.2 or abs(a.pos.z - b.pos.z) >= 3.06
+        assert apart, f"{a.name} at {a.pos.x:.1f},{a.pos.z:.1f} overlaps {b.name} at {b.pos.x:.1f},{b.pos.z:.1f}"
+
+
+def test_tokens_never_land_on_other_cards_and_stay_on_your_battlefield() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    # A row of cards one card-width apart, like a real battlefield (the bug found in TTS).
+    row = [_maker(lua, f"r{i:05d}", "maker1", x=-10 + 3 * i, z=-7) for i in range(7)]
+    for card in row:
+        card.menu[1].fn("White")
+        card.menu[2].fn("White")
+    g.Mock.flush()
+    tokens = _tokens(g, "Treasure") + _tokens(g, "Goblin Shaman 2/2 Red")
+    assert len(tokens) == 14
+    _assert_no_overlap(g, row + tokens)
+    assert all(1.8 <= -t.pos.z <= 16 and abs(t.pos.x) <= 29 for t in tokens), "on White's battlefield"
 
 
 def test_tokens_from_a_card_in_hand_land_on_your_side() -> None:

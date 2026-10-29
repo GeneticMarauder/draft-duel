@@ -86,8 +86,11 @@ CubeCobra cube (default `LSVCube`). Two halves:
   ready, `startGame` removes the land bags, moves the cube and discard pile to the table edges,
   shuffles, deals 7 to each hand and spawns 20-life counters. `ready`, `piles`, `playing` persist.
   **Tokens** (only while `playing`): a card whose GMNotes id is in `TOKENS_JSON.makers` gets a
-  right-click "Create <token>" per token; the token spawns beside the card, fanning to the owner's
-  right (a card in hand → `TOKEN_HOME_*` on the clicker's side). `UNIQUE_TOKENS` (The Monarch,
+  right-click "Create <token>" per token; the token spawns in the nearest free card-sized spot beside
+  the card (`tokenSpot`: along the row to the owner's right, then left, then rows toward the owner's
+  hand; checked against every card/pile/counter's rotated bounds; kept on the owner's battlefield,
+  `TOKEN_Z_MIN..MAX`, `|x| <= TOKEN_X_MAX`). A card in hand anchors at `TOKEN_HOME_*` on the
+  clicker's side. (Fixed fan-out used to drop tokens on top of neighbouring cards — seen in TTS.) `UNIQUE_TOKENS` (The Monarch,
   Day // Night) move instead of duplicating. Menus are lost when a card enters a deck or on reload, so
   they are re-added on `onObjectSpawn` / `onObjectLeaveContainer` / state change / `onLoad`. Token
   GMNotes are `{"token": label}` (no `id`, so the deck editor ignores them). `addPlayMenu` builds
