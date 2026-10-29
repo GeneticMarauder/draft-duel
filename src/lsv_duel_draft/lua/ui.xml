@@ -4,9 +4,10 @@
 </Panel>
 <Button id="startButton" rectAlignment="UpperCenter" offsetXY="0 -140" width="240" height="44" fontSize="20"
         textColor="#FFFFFF" colors="#2E7D32|#388E3C|#1B5E20|#555555" onClick="onStartClicked">Start Draft</Button>
-<Button id="resetViewButton" rectAlignment="UpperRight" offsetXY="-12 -120" width="140" height="36" fontSize="16"
+<!-- Bottom right, above Ready to play: the top-right corner does not receive clicks. -->
+<Button id="resetViewButton" rectAlignment="LowerRight" offsetXY="-24 112" width="140" height="36" fontSize="16"
         textColor="#FFFFFF" colors="#37474F|#455A64|#263238|#555555" onClick="onResetView">Reset view</Button>
-<!-- Not top-right: Tabletop Simulator's player list swallows clicks there. The status bar is hidden while playing. -->
+<!-- Top centre: the status bar is hidden while playing. -->
 <Button id="nextGameButton" active="false" rectAlignment="UpperCenter" offsetXY="0 -82" width="240" height="40" fontSize="18"
         textColor="#FFFFFF" colors="#6A1B9A|#7B1FA2|#4A148C|#555555" onClick="onNextGameClicked">Next game</Button>
 <Panel id="prompt_White" visibility="White" active="false" rectAlignment="LowerCenter" offsetXY="0 40" width="700" height="54" color="#B8860BEE">

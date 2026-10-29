@@ -115,7 +115,7 @@ blocks in the owner's color and ignores their tint. Hand zones exist only to def
 
 **Verified in game (Table_RPG):** felt top y≈0.96, table bounds 64 x 43.
 - XML UI in the top-right corner (under TTS's player list) does not receive clicks — keep buttons elsewhere
-  (Reset view there is affected too). `UI.setValue` does not relabel a Button; use `setAttribute(id, "text", …)`.
+  (Reset view now sits bottom right, above Ready to play). `UI.setValue` does not relabel a Button; use `setAttribute(id, "text", …)`.
 - Cards dropped/placed on each other merge into a deck unless `tryObjectEnterContainer` says no; a locked
   deck refuses `putObject`.
 - Testing tip: `/execute <lua>` in chat runs in Global (host only; lines over ~240 chars get cut). After
