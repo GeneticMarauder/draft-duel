@@ -435,6 +435,7 @@ def test_deck_editor_cards_float_flat_in_cascade_order() -> None:
     g = _finished_vs_bot(lua)
     white = [o for o in _deck_cards(g) if o.pos.z < 0]
     assert all(o.use_gravity is False and o.rot.x == 0 and o.rot.z == 0 for o in white)
+    assert all(o.sticky is False for o in white), "lifting a card must not drag the rest of its column"
     by_x: dict[float, list] = {}
     for o in white:
         by_x.setdefault(round(o.pos.x, 2), []).append(o)

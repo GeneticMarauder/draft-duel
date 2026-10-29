@@ -448,6 +448,8 @@ function layoutDeck(color, forceMain)
         -- Each card floats flat, a step above the one before, and stays draggable.
         o.setLock(false)
         o.use_gravity = false
+        -- Not sticky: lifting a card must not carry the cards cascaded on top of it.
+        o.sticky = false
         o.setScale({ x = DECK_SCALE, y = 1, z = DECK_SCALE })
         o.setRotation({ x = 0, y = seatYaw(color), z = 0 })
         o.setPosition({

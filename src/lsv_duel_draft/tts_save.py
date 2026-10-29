@@ -62,6 +62,7 @@ def _card_object(guid: str, name: str, text: str, note: str, slot: SheetSlot,
         "HideWhenFaceDown": True,
         "Hands": True,
         "Tooltip": True,
+        "Sticky": False,  # picking a card up never drags the cards resting on it
     }
 
 
