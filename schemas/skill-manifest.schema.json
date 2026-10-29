@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/skill-manifest.schema.json",
+  "title": "Skill manifest (SKILL.md frontmatter)",
+  "type": "object",
+  "required": ["skill_id", "name", "description", "layer", "type", "execution_mode", "version", "verified",
+               "depends_on", "samples", "side_effects"],
+  "additionalProperties": false,
+  "properties": {
+    "skill_id": {
+      "type": "string",
+      "pattern": "^(router|core|shared|mods)(\\.[a-z0-9]+(-[a-z0-9]+)*)+$",
+      "description": "Layer plus folder path, dot-separated; must equal the folder path."
+    },
+    "name": { "type": "string", "minLength": 3 },
+    "description": { "type": "string", "minLength": 20, "description": "What it does and when to use it." },
+    "layer": { "enum": ["router", "core", "shared", "mods"] },
+    "type": { "enum": ["orchestration", "reference", "pattern", "feature-map", "tooling"] },
+    "execution_mode": { "enum": ["advisory", "assisted", "automated"] },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "verified": { "enum": ["in-game", "docs-only"] },
+    "depends_on": { "type": "array", "items": { "type": "string" } },
+    "samples": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^scripts/[a-z0-9_]+\\.(lua|xml|py)$" }
+    },
+    "side_effects": { "type": "array", "items": { "type": "string" } }
+  }
+}

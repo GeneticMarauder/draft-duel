@@ -10,7 +10,9 @@ from typing import Any
 
 from lupa import LuaRuntime
 
-LUA_DIR = resources.files("lsv_duel_draft") / "lua"
+from draft_duel import zones
+
+LUA_DIR = resources.files("draft_duel") / "lua"
 MOCK = Path(__file__).parent / "lua" / "tts_mock.lua"
 
 
@@ -40,8 +42,16 @@ def make_lua(with_table: bool = False) -> LuaRuntime:
         ])
         g.TOKENS_JSON = json.dumps(TOKENS)
         g.MATS_JSON = json.dumps([{"name": n, "url": f"https://h/{n}.jpg"} for n in ("Volcano", "Aurora")])
+        g.ZONES_JSON = json.dumps({**zones.LAYOUT, "url": "https://h/zones.jpg"})
+        g.CUBES_JSON = json.dumps([{"key": k, "name": n, "count": c} for k, n, c in CUBES])
+        g.CUBE_DECKS = lua.table_from({k: json.dumps({"Name": "Deck", "Nickname": n, "ContainedObjects": [{}] * c})
+                                       for k, n, c in CUBES})
         lua.execute((LUA_DIR / "table.lua").read_text(encoding="utf-8"))
     return lua
+
+
+# The save's cubes: the first (515 cards, like Mock.setup(515)'s deck) is on the table at load.
+CUBES = [("lsv", "LSV Cube", 515), ("vintage", "MTGO Vintage Cube", 540)]
 
 
 # Two token-making cards: "maker1" makes Treasure and Goblin Shaman, "maker2" the Monarch.
@@ -871,7 +881,7 @@ def test_next_game_needs_a_confirming_second_click() -> None:
 
 
 def _mats(g) -> list:
-    return [o for o in g.Mock.objects.values() if o.kind == "Custom_Tile"]
+    return [o for o in g.Mock.objects.values() if o.kind == "Custom_Tile" and "playmat" in o.name]
 
 
 def _pick(g, color: str, index: int, as_color: str | None = None) -> None:
@@ -938,3 +948,298 @@ def test_playmat_survives_a_reload_and_ignores_the_game() -> None:
     g.onNextGameClicked(g.Player.White)
     g.Mock.flush()
     assert len(_mats(g)) == 1, "Next game leaves the playmat alone"
+
+
+# ------------------------------------------------------------------ zones, draw, untap, dice
+
+
+def _boards(g) -> dict:
+    return {o.name: o for o in g.Mock.objects.values() if o.kind == "Custom_Tile" and o.name.endswith(" zones")}
+
+
+def _library(g, color: str = "White"):
+    return next(o for o in g.Mock.objects.values() if o.kind == "Deck" and o.name == f"{color} library")
+
+
+def _button(board, label: str):
+    return next(b for b in _lua_list(board.buttons) if b.label == label)
+
+
+def _dice(g) -> list:
+    return [o for o in g.Mock.objects.values() if o.kind.startswith("Die_")]
+
+
+def test_each_seat_gets_a_zone_board_with_its_library_in_the_slot() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    boards = _boards(g)
+    assert set(boards) == {"White zones", "Red zones"}
+    white, red = boards["White zones"], boards["Red zones"]
+    assert white.locked and white.custom.image == "https://h/zones.jpg"
+    assert white.scale.z == zones.BOARD["h"] / 2, "a tile is 2 units deep at scale 1"
+    # On each owner's right: +x for White (at -z), -x for Red.
+    assert abs(white.pos.x - zones.BOARD["u"]) < 1e-6 and abs(white.pos.z + zones.BOARD["d"]) < 1e-6
+    assert abs(red.pos.x + zones.BOARD["u"]) < 1e-6 and abs(red.pos.z - zones.BOARD["d"]) < 1e-6
+    assert white.pos.y > 0.96 + g.MAT_THICKNESS, "on top of a playmat"
+    assert [b.label for b in _lua_list(white.buttons)] == ["Untap", "Draw"]
+    assert _button(white, "Draw").click_function == "onZoneDraw"
+    for color, sign in (("White", 1), ("Red", -1)):
+        lib = _library(g, color)
+        assert abs(lib.pos.x - sign * zones.BOARD["u"]) < 1e-6
+        assert abs(lib.pos.z + sign * zones.SLOTS["library"]["d"]) < 1e-6
+
+
+def test_draw_button_draws_for_its_owner_until_the_library_is_empty() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    white = _boards(g)["White zones"]
+    g.onZoneDraw(white, "Red")
+    assert g.Mock.dealt.White == 7 and any("White's board" in m for m in _lua_list(g.Mock.messages))
+    g.onZoneDraw(white, "White")
+    assert g.Mock.dealt.White == 8 and len(_library(g).cards) == 48 - 8
+    for _ in range(40):  # the last card is no longer a deck: it is found in the library slot
+        g.onZoneDraw(white, "White")
+    assert len(_lua_list(g.Player.White.getHandObjects())) == 48
+    g.onZoneDraw(white, "White")
+    assert any("library is empty" in m for m in _lua_list(g.Mock.messages))
+
+
+def test_untap_button_straightens_only_your_tapped_cards() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    lib = _library(g)
+
+    def played(x: float, z: float, yaw: float, flip: float = 0, locked: bool = False):
+        card = lib.takeObject(lua.table(position=lua.table(x=x, y=1.2, z=z)))
+        card.rot = lua.table(x=0, y=yaw, z=flip)
+        card.locked = locked
+        return card
+
+    tapped = played(0, -6, 90)
+    tapped_down = played(-4, -6, 270, flip=180)  # a face-down card (a morph) tapped the other way
+    upright = played(4, -6, 180)
+    theirs = played(0, 6, 90)  # tapped on Red's side
+    booster = played(8, -1, 90, locked=True)
+    g.onZoneUntap(_boards(g)["Red zones"], "White")  # not White's board: nothing happens
+    assert tapped.rot.y == 90
+    g.onZoneUntap(_boards(g)["White zones"], "White")
+    assert (tapped.rot.y, tapped.rot.z) == (180, 0)
+    assert (tapped_down.rot.y, tapped_down.rot.z) == (180, 180), "face-down stays face-down"
+    assert upright.rot.y == 180 and theirs.rot.y == 90 and booster.rot.y == 90
+
+
+def test_zone_boards_survive_a_reload_and_leave_for_sideboarding() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    saved = g.onSave()
+    for board in _boards(g).values():
+        board.buttons = lua.table()  # TTS does not save buttons
+    g.onLoad(saved)
+    g.Mock.flush()
+    boards = _boards(g)
+    assert len(boards) == 2 and all(len(_lua_list(b.buttons)) == 2 for b in boards.values())
+    g.onZoneDraw(boards["White zones"], "White")
+    assert g.Mock.dealt.White == 8, "the reloaded board still draws"
+
+    _click_next_game(g)
+    assert _boards(g) == {}, "the sideboard columns need that edge of the table"
+    g.onReadyClicked(g.Player.White)
+    g.Mock.flush()
+    assert set(_boards(g)) == {"White zones", "Red zones"}
+
+
+def test_tokens_are_not_created_on_a_zone_board() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    card = _maker(lua, "m00001", "maker1", x=16.6, z=-10)
+    for _ in range(4):
+        card.menu[1].fn("White")
+    g.Mock.flush()
+    b = zones.BOARD
+    for t in _tokens(g, "Treasure"):
+        clear = abs(t.pos.x - b["u"]) >= (b["w"] + 2.2) / 2 or abs(t.pos.z + b["d"]) >= (b["h"] + 3.06) / 2
+        assert clear, f"token at {t.pos.x:.1f},{t.pos.z:.1f} is on the board"
+
+
+def test_each_seat_has_its_dice_from_the_start_and_never_twice() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.Mock.flush()
+    dice = _dice(g)
+    assert sorted(d.name for d in dice) == ["Red d20", "Red d6", "Red d6", "White d20", "White d6", "White d6"]
+    white = [d for d in dice if d.name.startswith("White")]
+    assert all(d.pos.z < -10 and d.pos.x < -22 for d in white), "White's left corner, off the playmat"
+    assert all(d.tint.name == "White" for d in white)
+    g.onLoad(g.onSave())
+    g.Mock.flush()
+    assert len(_dice(g)) == 6, "a reload keeps the same dice"
+
+
+# ------------------------------------------------------------------ cubes
+
+
+def _cube_decks(g) -> list:
+    return [o for o in g.Mock.objects.values() if o.kind == "Deck" and o.cards is not None and len(o.cards) >= 300]
+
+
+def _choose_cube(g, color: str, index: int, as_color: str | None = None) -> None:
+    """Opens the seat's cube picker with its button, then clicks cube ``index`` (1-based)."""
+    player = g.Player[as_color or color]
+    g.onCubeButton(player, "-1", f"cubeButton_{color}")
+    g.onCubePick(player, "-1", f"cubePick_{color}_{index}")
+    g.Mock.flush()
+
+
+def test_players_switch_the_cube_before_the_draft() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.Mock.flush()
+    assert g.Mock.ui["cubeButton_White.text"] == "Cube: LSV Cube"
+    assert g.Mock.ui["cubeButton_Red.active"] == "true"
+    assert "Cube: LSV Cube" in g.Mock.ui["statusText"]
+
+    _choose_cube(g, "White", 2, as_color="Red")  # someone else's picker does nothing
+    assert g.Mock.spawnedJSON is None and g.Mock.objects["c00001"] is not None
+
+    old = g.Mock.objects["c00001"]
+    old_place = (old.pos.x, old.pos.y, old.pos.z, old.rot.y, old.rot.z)
+    g.onCubeButton(g.Player.White, "-1", "cubeButton_White")
+    assert g.Mock.ui["cubePicker_White.active"] == "true", "the button opens the picker"
+    g.onCubePick(g.Player.White, "-1", "cubePick_White_2")
+    g.Mock.flush()
+    assert g.Mock.ui["cubePicker_White.active"] == "false", "picking closes it"
+    assert g.Mock.objects["c00001"] is None, "the old cube is gone"
+    (deck,) = _cube_decks(g)
+    assert len(deck.cards) == 540 and deck.interactable is False
+    assert (deck.pos.x, deck.pos.y, deck.pos.z, deck.rot.y, deck.rot.z) == old_place, "same spot and facing"
+    assert g.Mock.ui["cubeButton_Red.text"] == "Cube: MTGO Vintage Cube", "both seats see the new cube"
+    assert any("White chose the MTGO Vintage Cube (540 cards)" in m for m in _lua_list(g.Mock.messages))
+
+    _choose_cube(g, "Red", 2)  # already on the table: nothing to do
+    assert g.Mock.spawnedJSON == 1
+
+    g.onStartClicked(g.Player.White)
+    g.Mock.flush()
+    assert g.Mock.ui["cubeButton_White.active"] == "false", "no switching once the draft starts"
+    assert any("Drafting the MTGO Vintage Cube" in m for m in _lua_list(g.Mock.messages))
+    g.switchCube("lsv", "Red")
+    assert any("can't change once the draft has started" in m for m in _lua_list(g.Mock.messages))
+    assert [d.guid for d in _cube_decks(g)] == [deck.guid]
+
+    _play(lua, 96)
+    assert g.Mock.ui["statusText"].startswith("Deck building")
+    assert len(deck.cards) == 540 - 192, "the draft dealt from the chosen cube"
+
+
+def test_chosen_cube_survives_a_reload_and_the_draft_continues_from_it() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.Mock.flush()
+    _choose_cube(g, "Red", 2)
+    (deck,) = _cube_decks(g)
+
+    saved = g.onSave()
+    g.Mock.ui["cubeButton_White.text"] = "Cube: ?"  # TTS does not save UI labels
+    deck.interactable = True  # nor this
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert g.Mock.ui["cubeButton_White.text"] == "Cube: MTGO Vintage Cube"
+    assert deck.interactable is False
+
+    g.onStartClicked(g.Player.Red)
+    g.Mock.flush()
+    _play(lua, 7)
+    saved = g.onSave()
+    for o in g.Mock.objects.values():
+        o.menu = lua.table()
+    g.onLoad(saved)
+    g.Mock.flush()
+    _play(lua, 96 - 7)
+    assert len(deck.cards) == 540 - 192
+
+
+def test_switching_back_restores_the_first_cube() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.Mock.flush()
+    _choose_cube(g, "White", 2)
+    _choose_cube(g, "White", 1)
+    (deck,) = _cube_decks(g)
+    assert len(deck.cards) == 515
+    assert g.Mock.ui["cubeButton_White.text"] == "Cube: LSV Cube"
+
+
+# ------------------------------------------------------------------ layout timing (seen in TTS)
+
+
+def test_start_draft_works_before_the_delayed_layout_has_run() -> None:
+    # In TTS, Start Draft was pressed while onLoad's delayed layout had not run: dealTo hit a nil layout.
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.onStartClicked(g.Player.White)  # before Mock.flush(): the 10-frame wait is still pending
+    g.Mock.flush()
+    holder = g.Mock.packHolder()
+    assert len(_lua_list(g.Mock.packCards(holder))) == 5
+
+
+def test_layout_ignores_a_cube_that_has_not_settled_onto_the_table() -> None:
+    # A fresh save's cube was measured at y=1.2 (half inside the table), giving felt y=0.15.
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.Mock.objects["c00001"].pos.y = 1.2
+    g.onLoad("")
+    g.Mock.flush()
+    g.onStartClicked(g.Player.White)
+    g.Mock.flush()
+    cards = _lua_list(g.Mock.packCards(g.Mock.packHolder()))
+    assert all(c.pos.y > 0.96 for c in cards), "pack cards sit above the felt"
+    dice = _dice(g)
+    assert dice and all(d.pos.y > 0.96 for d in dice), "dice spawn above the felt"
+
+
+def test_game_starts_when_cards_merge_into_piles_by_themselves() -> None:
+    # Seen in TTS: the gathered cards merged into a deck as they landed, before the script
+    # grouped them, so the piles were never named or recorded and nobody was dealt a hand.
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    white = [o for o in _deck_cards(g) if o.pos.z < 0]
+    _move_to_sideboard(lua, g, white[:3])
+    g.onReadyClicked(g.Player.White)
+    for color, sign in (("White", 1), ("Red", -1)):  # TTS merges each library on landing
+        spot = [o for o in g.Mock.objects.values() if o.kind == "Card"
+                and abs(o.pos.x - sign * zones.BOARD["u"]) < 0.01 and abs(o.pos.z + sign * zones.SLOTS["library"]["d"]) < 0.01]
+        assert len(spot) >= 40
+        g.group(lua.table_from(spot))
+    ready_at = g.Mock.now
+    lua.execute("local start = startGame; startGame = function() Mock.startedAt = Mock.now; start() end")
+    g.Mock.flush()
+    names = {o.name for o in g.Mock.objects.values() if o.kind == "Deck"}
+    assert {"White library", "White sideboard", "Red library"} <= names
+    assert g.Mock.dealt.White == 7 and g.Mock.dealt.Red == 7
+    assert len(_library(g).cards) == 45 - 7
+    assert g.Mock.startedAt - ready_at < 2, "the game starts as soon as the piles have formed (TTS waited 10 s)"
+
+
+def test_game_waits_for_slow_piles_before_dealing() -> None:
+    # Seen in TTS (game 2): Red's 48 cards were still merging when the game started, so the
+    # deal hit a partial pile (Red drew 2) and the library was never named.
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    g.Mock.groupLate = 30  # the cards stay loose for 3 seconds, then merge
+    g.onReadyClicked(g.Player.White)
+    g.Mock.flush()
+    names = {o.name for o in g.Mock.objects.values() if o.kind == "Deck"}
+    assert {"White library", "Red library"} <= names
+    assert g.Mock.dealt.White == 7 and g.Mock.dealt.Red == 7
+    assert len(_lua_list(g.Player.Red.getHandObjects())) == 7

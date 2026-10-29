@@ -1,0 +1,33 @@
+<!--
+  core.ui.xml-ui :: seat_panel.xml  (pairs with seat_panel.lua)
+  Paste into the Global UI (Scripting > Global > UI tab, or the save's "XmlUI" field).
+  One panel per seat, each visible only to that seat. Ids end in _<Color> so one
+  handler serves every seat. Bottom of the screen: the top-right corner (under
+  TTS's player list) does not receive clicks, and the top ~70px is TTS's toolbar.
+-->
+<Defaults>
+  <Button fontSize="18" textColor="#FFFFFF" colors="#37474F|#455A64|#263238|#555555" />
+  <Text color="#FFFFFF" alignment="MiddleCenter" />
+</Defaults>
+
+<Panel id="seat_White" visibility="White" active="false" rectAlignment="LowerCenter" offsetXY="0 24"
+       width="560" height="110" color="#000000CC">
+  <VerticalLayout padding="10 10 8 8" spacing="6">
+    <Text id="seatText_White" fontSize="22">Waiting...</Text>
+    <HorizontalLayout spacing="8">
+      <Button id="ready_White" onClick="onReadyClicked" colors="#2E7D32|#388E3C|#1B5E20|#555555">Ready</Button>
+      <Button id="confirm_White" onClick="onConfirmClicked">Reset round</Button>
+    </HorizontalLayout>
+  </VerticalLayout>
+</Panel>
+
+<Panel id="seat_Red" visibility="Red" active="false" rectAlignment="LowerCenter" offsetXY="0 24"
+       width="560" height="110" color="#000000CC">
+  <VerticalLayout padding="10 10 8 8" spacing="6">
+    <Text id="seatText_Red" fontSize="22">Waiting...</Text>
+    <HorizontalLayout spacing="8">
+      <Button id="ready_Red" onClick="onReadyClicked" colors="#2E7D32|#388E3C|#1B5E20|#555555">Ready</Button>
+      <Button id="confirm_Red" onClick="onConfirmClicked">Reset round</Button>
+    </HorizontalLayout>
+  </VerticalLayout>
+</Panel>

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/card-gmnotes.schema.json",
+  "title": "Card GMNotes payload (draft-duel)",
+  "description": "JSON the builder writes into each card's GMNotes and the Global script reads with cardInfo(). Cube and basic-land cards carry id/cmc/land/basic; tokens carry only token, which keeps them out of the deck editor.",
+  "oneOf": [
+    {
+      "title": "Cube or basic-land card",
+      "type": "object",
+      "required": ["id", "cmc", "land", "basic"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "description": "Scryfall id (basic lands: the land's name)." },
+        "cmc": { "type": "number", "minimum": 0 },
+        "land": { "type": "boolean" },
+        "basic": { "type": "boolean" }
+      }
+    },
+    {
+      "title": "Token",
+      "type": "object",
+      "required": ["token"],
+      "additionalProperties": false,
+      "properties": {
+        "token": { "type": "string", "description": "Token label, a key of TOKENS_JSON.tokens." }
+      }
+    }
+  ]
+}

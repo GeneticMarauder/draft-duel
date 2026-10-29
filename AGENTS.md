@@ -1,4 +1,4 @@
-# AGENTS.md - lsv-duel-draft
+# AGENTS.md - draft-duel
 
 Policy layer + architecture for this repo. This file is the source of truth;
 `CLAUDE.md` just imports it. Keep it current as the code evolves.
@@ -8,6 +8,35 @@ Policy layer + architecture for this repo. This file is the source of truth;
 Before editing: inspect the actual repo tree and align to files that exist today.
 Create new modules only when the task clearly requires them. Treat any
 architecture described here as the target, not proof it already exists.
+
+## Skills registry — start here
+
+This repo is organised as a skills registry for Tabletop Simulator work
+(modelled on oracle/Fusion-Setup-Configuration-Registry). Each skill is a folder
+with a `SKILL.md` manifest, ready-to-use `scripts/` samples and `references/`.
+
+- **Every change request starts at [`router/tts-change-router/SKILL.md`](router/tts-change-router/SKILL.md)**
+  (or `/tts-change`). It classifies the request and picks the mod map, skills,
+  prompt and definition of done.
+- Layers, dependencies pointing downward only:
+
+  | Layer | Holds |
+  | --- | --- |
+  | `router/` | Entry points: change router, in-game test planner. |
+  | `mods/` | One feature map per mod (`mods/draft-duel/`): feature → code → state → tests. |
+  | `shared/` | Reusable gameplay patterns: privacy, layout, rules engine, tokens, assets. |
+  | `core/` | One TTS API area each, with Lua samples: state, objects, decks, buttons, UI, seats, events, debug, testing, build. |
+  | `knowledge/` | `verified-behaviours.md` (what TTS really does), API links, `prompts/`. |
+  | `schemas/` | Manifest, card GMNotes and Global script-state contracts. |
+  | `governance/` | Skill and Lua sample standards, naming, review checklist, in-game testing, templates. |
+
+- Full list: [`SKILLS_TAXONOMY.md`](SKILLS_TAXONOMY.md). Read
+  [`knowledge/verified-behaviours.md`](knowledge/verified-behaviours.md) before changing in-game Lua,
+  and add to it whenever TTS surprises you.
+- New reusable techniques become samples under the right skill
+  ([`governance/lua-sample-standards.md`](governance/lua-sample-standards.md)); `tests/test_registry.py`
+  checks manifests, links, sample headers, MoonSharp syntax, and runs every sample under the mock.
+- This file keeps the policy and the mod's architecture; skills link here instead of repeating it.
 
 ## Tooling — uv only (enforced by a global hook)
 
@@ -19,7 +48,7 @@ architecture described here as the target, not proof it already exists.
 
 ## Structure
 
-- src-layout: code in `src/lsv_duel_draft/`, tests in `tests/`.
+- src-layout: code in `src/draft_duel/`, tests in `tests/`.
 - Slice by concern (`config`, `io`, `services`, `models`) rather than one module.
 
 ## Shared code — reuse agent-core, don't reinvent
@@ -43,21 +72,37 @@ Only add the LLM extra (`agent-core[llm]`) if this project calls an LLM at runti
 
 ## Architecture
 
-Builds a Tabletop Simulator (TTS) save for a 1v1 pick-from-5 draft of a
-CubeCobra cube (default `LSVCube`). Two halves:
+Builds **Draft Duel**, a Tabletop Simulator (TTS) save for a 1v1 pick-from-5 cube draft. One save
+offers several cubes (default: the LSV Cube from CubeCobra and the latest MTGO Vintage Cube); players
+pick one at the table before the draft. Two halves:
 
-**Python builder** (`uv run lsv-duel-draft [--cube ID] [--push]`)
-- `sources.py` — CubeCobra mainboard ids → Scryfall `/cards/collection` → `Card`s; image
+**Python builder** (`uv run draft-duel [--cubes lsv,vintage,cubecobra:ID] [--push]`)
+- `cubes.py` — `CUBES` registry (`CubeSource`: `key` saved with the game, display `name`, `kind`, `ref`).
+  `cubecobra` sources use `fetch_cube_ids` (owner's printings, plus the cube's basics); the `mtgo` source
+  reads MTGO's official page (`MTGO_VINTAGE_URL`, always the latest iteration) with `parse_mtgo_cardlist`
+  (first Color | Card table = current list; the page also has the changelist and the previous list)
+  and looks names up on Scryfall. `resolve` also accepts `cubecobra:<id>`. The first cube in `--cubes`
+  is on the table at load; basics come from the first cube that lists them, else by name.
+- `sources.py` — CubeCobra mainboard ids → Scryfall `/cards/collection` → `Card`s; `fetch_cards_by_name`
+  batches names and falls back to `/cards/named?exact=` (the collection endpoint misses some split cards
+  by full name, e.g. "Life // Death"); image
   downloads cached in `.cache/images/`. `CARD_SWAPS` replaces cube cards by name with cards we play
   instead (Cogwork Librarian → Booster Tutor); the build prints each swap. Always sends `USER_AGENT`: Scryfall returns 400 for
   generic/library user agents, **including the one TTS itself sends**.
 - `sheets.py` — 10x7 JPEG deck sheets (69 cards each; last slot is TTS's hidden-card slot),
   409x570 per card so sheets stay ≤4096 px; content-hashed filenames to defeat TTS's URL cache.
-- `tts_save.py` — save JSON: `Table_RPG`, hand zones + hidden zones (fixed GUIDs), the cube deck
-  (`c00001`; DFC backs as card state 2 on sheets ≥ 51), Global Lua + XML UI.
+- `tts_save.py` — save JSON: `Table_RPG`, hand zones (fixed GUIDs), the first cube's deck on the table
+  (`c00001`; DFC backs as card state 2 on sheets ≥ 51), Global Lua + XML UI. `build_save(cubes, …)`:
+  cards take the front sheets cube by cube, then basics; card GUIDs are offset per cube so they never
+  collide; each deck's `CustomDeck` lists only its own sheets. Every cube's deck is also embedded in the
+  script as a JSON string (`CUBE_DECKS[key]`, plus the `CUBES_JSON` list) — strings, so loading the save
+  decodes nothing. Headers use `lua_long_string` (enough `=` that card text can't end the string).
+  `cube_pickers` writes the per-seat cube pickers into `<!--CUBE_PICKERS-->` (none for a one-cube save).
 - `tokens.py` — tokens from the curated `data/tokens.csv` (one row per token; "Made by" lists cube
-  card names separated by `;`, DFCs as "Front // Back"). `match_makers` links them to cube cards by
-  name → card id; the build prints maker names no longer in the cube. Token images are downloaded
+  card names separated by `;`, DFCs as "Front // Back"). `match_makers` links them to the cards of
+  every cube by name → card id (one card can have a different id per cube's printing); the build prints
+  maker names in no cube. Cards that make tokens but have no row (common in the Vintage Cube) simply
+  get no Create menu. Token images are downloaded
   through our client like card images and rendered on their own sheets (`TOKEN_SHEET_BASE` 41+:
   fronts, then backs of double-faced tokens).
 - `playmats.py` — `THEMES`: twelve playmats drawn procedurally with Pillow (seeded, so identical pixels
@@ -66,11 +111,17 @@ CubeCobra cube (default `LSVCube`). Two halves:
   centred, padded with its edge colour; name from the file name). Saved to `sheets/mat??-<hash>.jpg`
   plus `matthumb??` thumbnails; names/URLs reach the script as `MATS_JSON`; thumbnails are save-level
   `CustomUIAssets` (`matthumb<i>`) used by the pickers that `mat_pickers` writes into `<!--MAT_PICKERS-->`.
-- `cli.py` — orchestrates; writes `dist/LSV Cube Duel Draft.json`, copies into the TTS Saves
+- `zones.py` — the zone board (borrowed from the MTG EDH table): `LAYOUT` (owner-relative `u` across,
+  `d` from the middle line) holds the board, its Library / Graveyard / Exile slots, the Draw / Untap
+  button strips, the sideboard spot and the dice; `render_board` draws the image from it
+  (`sheets/zones-<hash>.jpg`) and the same numbers reach the script as `ZONES_JSON` (with the image `url`).
+- `live.py` — `uv run draft-duel-live exec "<lua>"` / `load`: tests in the running game through TTS's
+  external-editor API (localhost:39999/39998), no screen needed (see verified-behaviours).
+- `cli.py` — orchestrates; writes `dist/Draft Duel.json`, copies into the TTS Saves
   folder when it exists, `--push` commits `sheets/` so raw.githubusercontent.com URLs resolve.
 - Card images are served from this public repo (`sheets/`). TTS cannot load Scryfall images directly.
 
-**Lua (in-game Global script)** — `src/lsv_duel_draft/lua/`
+**Lua (in-game Global script)** — `src/draft_duel/lua/`
 - `draft_core.lua` — pure rules engine (no TTS API). Per pack, starter S / other O:
   S picks, O picks, O picks, S picks — each from 5 cards (`PACK_SIZE`, topped up from the cube), then
   the 4 leftovers are discarded face-up. Starter alternates; 24 packs → 48 picks each (192 cards dealt).
@@ -79,6 +130,8 @@ CubeCobra cube (default `LSVCube`). Two halves:
   right-click "Draft this card"), then the 12x4 pick grid (0.65x). Bots draft for seats empty at
   Start Draft. State persists via `onSave`/`onLoad` (buttons, menus and visibility are reapplied).
   Chat commands: `!draftdebug` (geometry dump), `!draftauto [n]` (random picks for testing).
+  `computeLayout` measures card size and felt height from the cube (falling back to `FELT_Y` 0.96 when
+  the cube hasn't settled); it runs from `onLoad` after 10 frames and again at Start Draft.
   **Deck editor** (after pick 96, and on reload of a finished draft): every card on a player's half
   is sorted into columns by mana value (0..7+, then lands), cascaded so names show, gravity off and
   non-sticky so cards stay flat and lift one at a time. The deck is centred on the table; owner-x
@@ -87,8 +140,11 @@ CubeCobra cube (default `LSVCube`). Two halves:
   dropped in the sideboard is destroyed.
   `tryObjectEnterContainer` stops cards merging into piles. Card GMNotes carry
   `{"id","cmc","land","basic"}`; basic-land card data comes from the `BASIC_LANDS_JSON` script header, token data from `TOKENS_JSON`.
-  **Ready to play**: `readyUp` (min 40 cards; bot seats ready automatically) groups the deck into a
-  face-down library and the sideboard into a pile invisible to the opponent; when every seat is
+  **Ready to play**: `readyUp` (min 40 cards; bot seats ready automatically) stacks the deck into a
+  face-down library and the sideboard into a pile invisible to the opponent (`gatherPile`: the cards
+  merge by themselves as they land, so `settlePile` finds the pile by position — `objectAt` — and waits
+  until it holds every card before naming it and recording `piles`); `startWhenPilesSettle` waits for
+  every library, then `startGame` — when every seat is
   ready, `startGame` removes the land bags, moves the cube and discard pile to the table edges,
   shuffles, deals 7 to each hand and spawns 20-life counters. `ready`, `piles`, `playing` persist.
   **Tokens** (only while `playing`): a card whose GMNotes id is in `TOKENS_JSON.makers` gets a
@@ -123,22 +179,43 @@ CubeCobra cube (default `LSVCube`). Two halves:
   scale 1 and its width follows the image), locked and non-interactable, centred `MAT_Z` from the middle.
   `mats` persists; `onLoad` re-locks them (interactable is not saved) and `updateMatButtons` relabels
   the buttons. Next game leaves them alone.
+  **Zones** (§ zones, from `ZONES_JSON`; empty header = no board, old pile spots): `readyUp` spawns the
+  seat's zone board (`placeBoard`: a locked `Custom_Tile` on top of the playmat at the owner's right edge,
+  scale `h/2`) before gathering the library into its Library slot; the sideboard pile goes off the mat
+  (`SIDEBOARD_U/D`). The board carries real **Draw** (`drawCard`: deals 1 from `findLibrary` — the pile by
+  GUID, else whatever is in the slot once the library is down to one card) and **Untap** buttons
+  (`untapAll`: every unlocked card on the owner's side not in hand back to `seatYaw`, face-down kept
+  face-down); only the owner may press them. Button sizes use `BUTTON_UNITS` (≈450 per table unit, an
+  estimate). `boards` persists; `refreshBoards` re-adds buttons after a reload; `nextGame` removes the
+  boards (the sideboard columns need that edge); `spotIsFree` keeps tokens off them. `placeDice` (onLoad)
+  spawns a d20 and two d6 per seat, tinted its color, in its left corner, once (GMNotes `die:<color>:<i>`).
+  **Cubes** (§ cubes): `CUBES` comes from `CUBES_JSON`; `cubeKey` (which cube) and `cubeGuid` (its deck —
+  `c00001` only until a switch) persist; every former `CUBE_GUID` check uses `cubeGuid`. Until the draft
+  starts, each seat's "Cube: <name>" button (bottom right, above the playmat button) opens its picker
+  (`onCubeButton`); a choice → `onCubePick` → `switchCube`: destroys the cube deck and spawns the chosen
+  one with `spawnObjectJSON(CUBE_DECKS[key])` at the old deck's position/rotation, non-interactable,
+  then `computeLayout`. `updateCubeButtons` (from `updateUI`) relabels and hides the buttons once the
+  draft starts or when the save has one cube. The status bar and the Start Draft broadcast name the cube.
+  (Not yet seen in TTS: `spawnObjectJSON` of a full cube deck.)
 - `ui.xml` — status bar (hidden once the game starts), Start Draft button, Reset view, Next game,
-  per-seat playmat buttons (pickers are generated), per-seat "your pick" prompts.
+  per-seat playmat and cube buttons (pickers are generated), per-seat "your pick" prompts.
 
 **Privacy is per card, not hidden zones** (re-applied on every pickup/drop/state change via `rehide`, plus `!hide`). Pack cards use `setHiddenFrom(others)` (opponent sees
 backs); picks use `setInvisibleTo(others)`. Hidden zones were dropped: TTS draws them as solid
 blocks in the owner's color and ignores their tint. Hand zones exist only to define seats.
 
-**Verified in game (Table_RPG):** felt top y≈0.96, table bounds 64 x 43.
-- XML UI in the top-right corner (under TTS's player list) does not receive clicks — keep buttons elsewhere
-  (Reset view now sits bottom right, above Ready to play). `UI.setValue` does not relabel a Button; use `setAttribute(id, "text", …)`.
-- Cards dropped/placed on each other merge into a deck unless `tryObjectEnterContainer` says no; a locked
-  deck refuses `putObject`.
-- Testing tip: `/execute <lua>` in chat runs in Global (host only; lines over ~240 chars get cut). After
-  typing in chat, the next click on the table only takes focus away from the chat box.
+**Verified in game** — everything TTS was seen doing (Table_RPG felt y≈0.96 and 64 x 43 bounds, the
+top-right UI dead zone, `UI.setValue` not relabelling Buttons, cards merging unless
+`tryObjectEnterContainer` refuses, locked decks refusing `putObject`, `/execute` tips…) lives in
+[`knowledge/verified-behaviours.md`](knowledge/verified-behaviours.md). Read it before changing `table.lua`;
+add to it whenever TTS surprises you. (Reset view sits bottom right, above Ready to play, because of the dead zone.)
 
 **Tests** — `tests/test_draft_lua.py` runs the real Lua under `lupa` against `tests/lua/tts_mock.lua`
 (a mock of the TTS API); keep TTS-specific calls inside the mock's surface or extend the mock.
+The mock's `Wait` has a clock (`Mock.now`; `flush` runs waits in time order) and can merge piles late
+(`Mock.groupLate`). Passing the mock is not enough: before handing a change over, play it through in the
+running game with `draft-duel-live` (fresh load → Start Draft → `autoPick(48)` → Ready → Next game → Ready).
+`tests/test_registry.py` validates the skills registry and runs every Lua sample against the mock plus
+`tests/lua/tts_mock_registry.lua` (extra API the samples use).
 TTS Lua is MoonSharp (Lua 5.2): no `//`, no `goto`, no integer-only semantics.
 <!-- Describe this project's real pipeline / modules here as it takes shape. -->

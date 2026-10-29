@@ -1,7 +1,7 @@
 -- Minimal stand-in for the Tabletop Simulator scripting API, enough to run
 -- table.lua end to end. Hand membership is decided by position, like TTS.
 
-Mock = { objects = {}, waits = {}, messages = {}, ui = {}, nextCard = 0 }
+Mock = { objects = {}, waits = {}, messages = {}, ui = {}, nextCard = 0, now = 0 }
 
 local function vec(p)
   return { x = p.x or p[1] or 0, y = p.y or p[2] or 0, z = p.z or p[3] or 0 }
@@ -12,6 +12,7 @@ function Mock.newObject(guid, kind)
               pos = { x = 0, y = 1, z = 0 }, rot = { x = 0, y = 0, z = 0 },
               scale = { x = 1, y = 1, z = 1 }, menu = {}, locked = false, interactable = true }
   o.getGMNotes = function() return o.notes end
+  o.setGMNotes = function(n) o.notes = n end
   o.getName = function() return o.name end
   o.setName = function(n) o.name = n end
   o.destruct = function() Mock.objects[o.guid] = nil end
@@ -30,6 +31,9 @@ function Mock.newObject(guid, kind)
   o.createButton = function(params) table.insert(o.buttons, params) end
   o.clearButtons = function() o.buttons = {} end
   o.setLock = function(b) o.locked = b end
+  o.getLock = function() return o.locked end
+  o.setRotationSmooth = function(r) o.rot = vec(r) end
+  o.setColorTint = function(c) o.tint = c end
   o.setVelocity = function(v) o.velocity = vec(v) end
   o.setAngularVelocity = function(v) o.angularVelocity = vec(v) end
   o.getBounds = function() return { size = { x = 2.2, y = 0.2, z = 3.1 } } end
@@ -108,11 +112,19 @@ function Mock.setup(cubeSize)
   Player = { White = makePlayer("White", "a00001"), Red = makePlayer("Red", "a00002") }
 end
 
+-- Runs queued waits in time order (Mock.now is the simulated clock, in seconds).
+-- An entry is { fn = ..., due = ... }, or a bare function due now.
 function Mock.flush()
   local guard = 0
   while #Mock.waits > 0 do
-    local fn = table.remove(Mock.waits, 1)
-    fn()
+    local best, bestDue = 1, nil
+    for i, w in ipairs(Mock.waits) do
+      local due = type(w) == "table" and w.due or Mock.now
+      if bestDue == nil or due < bestDue then best, bestDue = i, due end
+    end
+    local w = table.remove(Mock.waits, best)
+    if bestDue > Mock.now then Mock.now = bestDue end
+    if type(w) == "table" then w.fn() else w() end
     guard = guard + 1
     if guard > 100000 then error("Wait queue never drained") end
   end
@@ -145,8 +157,8 @@ end
 
 getObjectFromGUID = function(guid) return Mock.objects[guid] end
 Wait = {
-  time = function(fn) table.insert(Mock.waits, fn) end,
-  frames = function(fn) table.insert(Mock.waits, fn) end,
+  time = function(fn, seconds) table.insert(Mock.waits, { fn = fn, due = Mock.now + (seconds or 0) }) end,
+  frames = function(fn, n) table.insert(Mock.waits, { fn = fn, due = Mock.now + (n or 1) / 60 }) end,
 }
 UI = {
   setValue = function(id, v) Mock.ui[id] = v end,
@@ -210,6 +222,20 @@ group = function(objs)
   end
   return { d }
 end
+-- Seen in TTS: merging a big pile takes a while. With Mock.groupLate = n the cards stay
+-- loose for n tenths of a second, then merge (and group() returns nothing, as in TTS).
+local groupNow = group
+group = function(objs)
+  if not Mock.groupLate then return groupNow(objs) end
+  local left = Mock.groupLate
+  local function later()
+    left = left - 1
+    if left > 0 then table.insert(Mock.waits, { fn = later, due = Mock.now + 0.1 }) else groupNow(objs) end
+  end
+  table.insert(Mock.waits, { fn = later, due = Mock.now + 0.1 })
+  return {}
+end
+stringColorToRGB = function(color) return { r = 1, g = 1, b = 1, name = color } end
 broadcastToAll = function(msg) table.insert(Mock.messages, msg) end
 broadcastToColor = function(msg, color) table.insert(Mock.messages, color .. ": " .. msg) end
 printToAll = function(msg) table.insert(Mock.messages, msg) end
@@ -220,7 +246,15 @@ getObjects = function()
 end
 spawnObjectData = function(params)
   Mock.spawned = (Mock.spawned or 0) + 1
-  local o = Mock.newObject(string.format("b%05x", Mock.spawned), params.data.Name)
+  local guid = string.format("b%05x", Mock.spawned)
+  local o
+  if params.data.Name == "Deck" then
+    -- A whole deck (a cube switched in): one card per contained object, cube-sized bounds.
+    o = Mock.newDeck(guid, #(params.data.ContainedObjects or {}))
+    o.getBounds = function() return { size = { x = 2.2, y = 2.1, z = 3.06 } } end
+  else
+    o = Mock.newObject(guid, params.data.Name)
+  end
   o.notes = params.data.GMNotes or ""
   o.name = params.data.Nickname or o.guid
   o.data = params.data
@@ -228,6 +262,12 @@ spawnObjectData = function(params)
   if params.rotation then o.setRotation(params.rotation) end
   if params.callback_function then params.callback_function(o) end
   return o
+end
+-- Like spawnObjectData, but the object data arrives as a JSON string.
+spawnObjectJSON = function(params)
+  Mock.spawnedJSON = (Mock.spawnedJSON or 0) + 1
+  return spawnObjectData({ data = JSON.decode(params.json), position = params.position,
+                           rotation = params.rotation, callback_function = params.callback_function })
 end
 -- A player pulling a card out of a bottomless bag and dropping it at pos.
 function Mock.takeFromBag(bag, pos)

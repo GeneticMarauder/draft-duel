@@ -1,7 +1,7 @@
 [project]
-name = "lsv-duel-draft"
+name = "draft-duel"
 version = "0.1.0"
-description = "Builds a Tabletop Simulator 1v1 pick-from-5 draft of LSV's powered cube"
+description = "Builds Draft Duel: a Tabletop Simulator 1v1 pick-from-5 cube draft (LSV Cube, MTGO Vintage Cube, ...)"
 readme = "README.md"
 authors = [
     { name = "Justin Hittell", email = "justin.hittell@gmail.com" }
@@ -24,4 +24,8 @@ dev = [
 ]
 
 [project.scripts]
-lsv-duel-draft = "lsv_duel_draft.cli:main"
+draft-duel = "draft_duel.cli:main"
+draft-duel-live = "draft_duel.live:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

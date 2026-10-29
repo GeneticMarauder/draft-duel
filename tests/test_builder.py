@@ -6,10 +6,16 @@ from pathlib import Path
 
 from PIL import Image
 
-from lsv_duel_draft import sheets as sh
-from lsv_duel_draft.models import Card, Face, Sheet
-from lsv_duel_draft.sources import card_from_scryfall
-from lsv_duel_draft.tts_save import BACK_SHEET_BASE, assign_slots, build_save
+from draft_duel import sheets as sh
+from draft_duel.cubes import CUBES, parse_mtgo_cardlist, resolve
+from draft_duel.models import Card, Cube, Face, Sheet
+from draft_duel.sources import card_from_scryfall
+from draft_duel.tts_save import (
+    BACK_SHEET_BASE,
+    assign_slots,
+    build_save,
+    lua_long_string,
+)
 
 NORMAL = {"id": "n1", "name": "Lightning Bolt", "type_line": "Instant", "mana_cost": "{R}",
           "oracle_text": "Deal 3.", "image_uris": {"normal": "https://x/normal/front/a/b/n1.jpg"}}
@@ -67,7 +73,7 @@ def test_save_structure() -> None:
     fronts, backs = assign_slots(cards)
     ids = {s.sheet_id for s in fronts} | {b.sheet_id for b in backs if b}
     sheets = {i: Sheet(i, f"s{i}.jpg", f"https://h/s{i}.jpg") for i in ids}
-    save = build_save(cards, sheets, "https://h/back.jpg", "LSVCube")
+    save = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg")
 
     deck = next(o for o in save["ObjectStates"] if o["Name"] == "Deck")
     assert deck["GUID"] == "c00001" and len(deck["ContainedObjects"]) == 140
@@ -91,7 +97,7 @@ def test_cards_carry_deck_editor_data_and_basics_reach_the_script() -> None:
     basics = [Card("p", Face("Plains", "", "u/p"), is_land=True)]
     fronts, _ = assign_slots(cards + basics)
     sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
-    save = build_save(cards, sheets, "https://h/back.jpg", "LSVCube", basics)
+    save = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg", basics)
 
     deck = next(o for o in save["ObjectStates"] if o["Name"] == "Deck")
     notes = [json.loads(c["GMNotes"]) for c in deck["ContainedObjects"]]
@@ -108,7 +114,7 @@ def test_cards_carry_deck_editor_data_and_basics_reach_the_script() -> None:
 
 
 def test_bundled_token_list_parses() -> None:
-    from lsv_duel_draft.tokens import load_tokens
+    from draft_duel.tokens import load_tokens
 
     tokens = load_tokens()
     by_label = {t.label: t for t in tokens}
@@ -120,8 +126,8 @@ def test_bundled_token_list_parses() -> None:
 
 
 def test_makers_match_cube_cards_by_any_face_name() -> None:
-    from lsv_duel_draft.models import Token
-    from lsv_duel_draft.tokens import match_makers
+    from draft_duel.models import Token
+    from draft_duel.tokens import match_makers
 
     tokens = [Token("Treasure", "", "u/t", makers=("Fable // Reflection", "Ragavan")),
               Token("Clue", "", "u/c", makers=("Not In Cube",))]
@@ -135,8 +141,8 @@ def test_makers_match_cube_cards_by_any_face_name() -> None:
 def test_tokens_reach_the_script_with_their_own_sheet() -> None:
     import json
 
-    from lsv_duel_draft.models import Token
-    from lsv_duel_draft.tts_save import TOKEN_SHEET_BASE, assign_token_slots
+    from draft_duel.models import Token
+    from draft_duel.tts_save import TOKEN_SHEET_BASE, assign_token_slots
 
     cards = [Card("a", Face("Ragavan", "", "u/a"))]
     tokens = [Token("Treasure", "Token Artifact", "u/t"), Token("Day // Night", "Card", "u/d", "u/n")]
@@ -147,7 +153,7 @@ def test_tokens_reach_the_script_with_their_own_sheet() -> None:
     fronts, _ = assign_slots(cards)
     ids = {s.sheet_id for s in fronts} | {TOKEN_SHEET_BASE}
     sheets = {i: Sheet(i, f"s{i}.jpg", f"https://h/s{i}.jpg") for i in ids}
-    save = build_save(cards, sheets, "https://h/back.jpg", "LSVCube", tokens=tokens, makers={"a": ["Treasure"]})
+    save = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg", tokens=tokens, makers={"a": ["Treasure"]})
     line = save["LuaScript"].split("\n")[1]
     data = json.loads(line.removeprefix("TOKENS_JSON = [==[").removesuffix("]==]"))
     assert data["makers"] == {"a": ["Treasure"]}
@@ -158,7 +164,7 @@ def test_tokens_reach_the_script_with_their_own_sheet() -> None:
 
 
 def test_swap_cards_replaces_by_name_in_place() -> None:
-    from lsv_duel_draft.sources import swap_cards
+    from draft_duel.sources import swap_cards
 
     cards = [Card("a", Face("Bolt", "", "u/a")), Card("c", Face("Cogwork Librarian", "", "u/c"))]
     tutor = Card("t", Face("Booster Tutor", "", "u/t"))
@@ -171,7 +177,7 @@ def test_swap_cards_replaces_by_name_in_place() -> None:
 
 
 def test_playmats_render_distinct_images_of_the_mat_shape(tmp_path: Path) -> None:
-    from lsv_duel_draft import playmats
+    from draft_duel import playmats
 
     written = playmats.render_all(tmp_path)
     assert len(written) == len(playmats.THEMES) >= 10
@@ -194,7 +200,7 @@ def test_playmats_reach_the_script_and_the_dropdowns() -> None:
     sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
     mats = [{"name": "Volcano", "url": "https://h/v.jpg", "thumb": "https://h/vt.jpg"},
             {"name": "Dragon's Hoard", "url": "https://h/d.jpg", "thumb": "https://h/dt.jpg"}]
-    save = build_save(cards, sheets, "https://h/back.jpg", "LSVCube", mats=mats)
+    save = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg", mats=mats)
     line = save["LuaScript"].splitlines()[2]
     assert json.loads(line.removeprefix("MATS_JSON = [==[").removesuffix("]==]")) == mats
     xml = save["XmlUI"]
@@ -210,7 +216,7 @@ def test_playmats_reach_the_script_and_the_dropdowns() -> None:
 
 
 def test_pictures_in_the_playmats_folder_become_mats(tmp_path: Path) -> None:
-    from lsv_duel_draft import playmats
+    from draft_duel import playmats
 
     folder = tmp_path / "playmats"
     folder.mkdir()
@@ -228,3 +234,119 @@ def test_pictures_in_the_playmats_folder_become_mats(tmp_path: Path) -> None:
 
     written = playmats.render_all(tmp_path / "out", folder)
     assert [n for n, _, _ in written][-1] == "Black Clover" and len(written) == len(playmats.THEMES) + 1
+
+
+# ------------------------------------------------------------------ cubes
+
+MTGO_PAGE = """<html><body>
+<h1 class="accordion">Starting October 7 - Vintage Cube Full Card List</h1>
+<table><tr><td><strong>Color</strong></td><td><strong>Card</strong></td></tr>
+{current}</table>
+<h1 class="accordion">Changelist October 7</h1>
+<table><tr><td>Color</td><td>In</td><td>Color</td><td>Out</td></tr>
+<tr><td>White</td><td>Balance</td><td>White</td><td>Wrath of God</td></tr></table>
+<h1 class="accordion">Through October 6 - Vintage Cube Full Card List</h1>
+<table><tr><td>Color</td><td>Card</td></tr><tr><td>White</td><td>Wrath of God</td></tr></table>
+</body></html>"""
+
+
+def test_mtgo_page_gives_the_latest_full_list() -> None:
+    rows = "".join(f"<tr><td>Blue</td><td>Card {i}</td></tr>" for i in range(150))
+    rows += "<tr><td>Black</td><td>Bitterblossom &amp; Friends</td></tr><tr><td>Gold</td><td>Life // Death</td></tr>"
+    names = parse_mtgo_cardlist(MTGO_PAGE.format(current=rows))
+    assert len(names) == 152 and names[0] == "Card 0"
+    assert names[-2:] == ["Bitterblossom & Friends", "Life // Death"], "entities decoded, split names kept"
+    assert "Wrath of God" not in names, "the previous iteration's list is ignored"
+
+
+def test_mtgo_page_without_a_full_list_is_an_error() -> None:
+    import pytest
+
+    with pytest.raises(ValueError):
+        parse_mtgo_cardlist("<html>maintenance</html>")
+    with pytest.raises(ValueError, match="truncated"):
+        parse_mtgo_cardlist(MTGO_PAGE.format(current="<tr><td>Blue</td><td>Ancestral Recall</td></tr>"))
+
+
+def test_cubes_resolve_by_key_or_cubecobra_id() -> None:
+    import pytest
+
+    assert resolve("lsv") == CUBES["lsv"] and resolve("vintage").kind == "mtgo"
+    custom = resolve("cubecobra:My Pauper Cube")
+    assert (custom.key, custom.kind, custom.ref) == ("my-pauper-cube", "cubecobra", "My Pauper Cube")
+    with pytest.raises(ValueError):
+        resolve("legacy")
+
+
+def test_lua_long_string_never_ends_early() -> None:
+    assert lua_long_string("abc") == "[==[abc]==]"
+    assert lua_long_string("x]==]y") == "[===[x]==]y]===]"
+
+
+def test_save_offers_every_cube_with_the_first_on_the_table() -> None:
+    import json
+    import re
+
+    lsv, vintage = _cards(70), _cards(80, dfc_every=8)
+    fronts, backs = assign_slots(lsv + vintage)
+    ids = {s.sheet_id for s in fronts} | {b.sheet_id for b in backs if b}
+    sheets = {i: Sheet(i, f"s{i}.jpg", f"https://h/s{i}.jpg") for i in ids}
+    save = build_save([Cube("lsv", "LSV Cube", lsv), Cube("vintage", "MTGO Vintage Cube", vintage)],
+                      sheets, "https://h/back.jpg")
+
+    (table_deck,) = [o for o in save["ObjectStates"] if o["Name"] == "Deck"]
+    assert table_deck["GUID"] == "c00001" and table_deck["Nickname"] == "LSV Cube"
+    assert len(table_deck["ContainedObjects"]) == 70
+
+    script = save["LuaScript"]
+    cubes = json.loads(re.search(r"^CUBES_JSON = \[==\[(.*)\]==\]$", script, re.MULTILINE).group(1))
+    assert cubes == [{"key": "lsv", "name": "LSV Cube", "count": 70},
+                     {"key": "vintage", "name": "MTGO Vintage Cube", "count": 80}]
+    decks = dict(re.findall(r'\["(\w+)"\] = \[==\[(.*?)\]==\]', script.split("CUBE_DECKS = ", 1)[1].split("\n", 1)[0]))
+    vintage_deck = json.loads(decks["vintage"])
+    assert json.loads(decks["lsv"]) == table_deck
+    assert vintage_deck["Nickname"] == "MTGO Vintage Cube" and len(vintage_deck["ContainedObjects"]) == 80
+
+    guids = [c["GUID"] for d in (table_deck, vintage_deck) for c in d["ContainedObjects"]]
+    assert len(guids) == len(set(guids)), "card GUIDs are unique across cubes"
+    lsv_sheets = {s.sheet_id for s in fronts[:70]}
+    assert {int(k) for k in table_deck["CustomDeck"]} == lsv_sheets, "a deck only loads its own sheets"
+    assert 'id="cubePick_White_2"' in save["XmlUI"] and 'id="cubeButton_Red"' in save["XmlUI"]
+    assert "LSV Cube, MTGO Vintage Cube" in save["Note"]
+
+
+def test_a_single_cube_save_has_no_picker() -> None:
+    cards = _cards(10)
+    fronts, _ = assign_slots(cards)
+    sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
+    save = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg")
+    assert "cubePick_" not in save["XmlUI"]
+
+
+# ------------------------------------------------------------------ zone board
+
+
+def test_zone_board_image_matches_its_layout_and_reaches_the_script(tmp_path: Path) -> None:
+    import json
+
+    from draft_duel import zones
+
+    name = zones.render_all(tmp_path)
+    assert zones.render_all(tmp_path) == name, "drawing is deterministic"
+    with Image.open(tmp_path / name) as img:
+        w, h = img.size
+    assert abs(w / h - zones.BOARD["w"] / zones.BOARD["h"]) < 0.01, "a tile's width follows the image"
+    top, bottom = zones.BOARD["d"] - zones.BOARD["h"] / 2, zones.BOARD["d"] + zones.BOARD["h"] / 2
+    for area in (*zones.SLOTS.values(), *zones.BUTTONS.values()):
+        assert top < area["d"] - area["h"] / 2 and area["d"] + area["h"] / 2 < bottom, "inside the board"
+    assert zones.BOARD["u"] + zones.BOARD["w"] / 2 <= 22, "inside the 44-wide playmat"
+
+    cards = [Card("a", Face("Bolt", "", "u/a"))]
+    fronts, _ = assign_slots(cards)
+    sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
+    save = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg", zones_url="https://h/z.jpg")
+    line = next(x for x in save["LuaScript"].splitlines() if x.startswith("ZONES_JSON = "))
+    data = json.loads(line.removeprefix("ZONES_JSON = [==[").removesuffix("]==]"))
+    assert data["url"] == "https://h/z.jpg" and data["slots"] == zones.SLOTS
+    plain = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg")
+    assert "ZONES_JSON = [==[{}]==]" in plain["LuaScript"], "no image, no board"

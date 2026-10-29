@@ -1,7 +1,7 @@
 # Your own playmats
 
 Drop a picture (`.png`, `.jpg`, `.jpeg` or `.webp`) in this folder and rebuild
-(`uv run lsv-duel-draft --push`). It shows up in the in-game playmat picker after
+(`uv run draft-duel --push`). It shows up in the in-game playmat picker after
 the twelve built-in mats, named after the file: `Black_Clover.png` → "Black Clover".
 
 Any shape works: the whole picture is shown, centred, and the rest of the mat is

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/global-script-state.schema.json",
+  "title": "Global script state (draft-duel onSave payload)",
+  "description": "What table.lua's onSave returns and onLoad restores. Every key must have a default in onLoad, because older saves won't have newer keys. Add a key here in the same change that adds it to onSave.",
+  "type": "object",
+  "required": ["draft"],
+  "properties": {
+    "draft": { "type": "object", "description": "DraftCore:serialize() — pack, picks per color, starter, counters." },
+    "discard": { "type": ["string", "null"], "description": "GUID of the face-up discard pile." },
+    "bots": { "type": "array", "items": { "type": "string" }, "description": "Seat colors a bot drafts for." },
+    "ready": { "type": "object", "additionalProperties": { "type": "boolean" }, "description": "color -> pressed Ready to play." },
+    "piles": { "type": "object", "description": "color -> { library = guid, sideboard = guid }." },
+    "playing": { "type": "boolean" },
+    "firstPlayer": { "type": ["string", "null"] },
+    "booster": { "type": ["object", "null"], "description": "Open Booster Tutor booster: opener color + card GUIDs." },
+    "owned": { "type": "object", "description": "color -> { main = [guid], side = [guid] }, recorded at readyUp." },
+    "tutored": { "type": "array", "items": { "type": "string" }, "description": "GUIDs taken with Booster Tutor this game." },
+    "gameNumber": { "type": "integer", "minimum": 1 },
+    "mats": { "type": "object", "description": "color -> { name, guid } of the seat's playmat tile." },
+    "cubeKey": { "type": "string", "description": "Key of the cube on the table (an entry of CUBES_JSON)." },
+    "cubeGuid": { "type": "string", "description": "GUID of the cube deck; c00001 until players switch cubes." },
+    "boards": { "type": "object", "additionalProperties": { "type": "string" }, "description": "color -> GUID of the seat's zone board (from Ready until Next game)." }
+  }
+}
