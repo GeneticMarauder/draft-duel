@@ -44,6 +44,7 @@ local booster = nil      -- { color = opener, cards = { guid, ... } } while Boos
 local owned = {}         -- color -> { main = { guid, ... }, side = { guid, ... } } as of their last Ready
 local tutored = {}       -- guids of cards taken with Booster Tutor this game (they leave after it)
 local gameNumber = 1
+local mats = {}          -- color -> { name = ..., guid = ... } for each seat's chosen playmat
 
 -- ---------------------------------------------------------------- helpers
 
@@ -1110,6 +1111,71 @@ function nextGame()
   end, 0.5)
 end
 
+-- ---------------------------------------------------------------- playmats
+-- Each seated player picks a playmat from the dropdown at the bottom right
+-- (visible only to them). The mat is a locked, non-interactable tile under
+-- their half of the table; cards and tokens rest on it. The artwork is drawn
+-- by the builder (playmats.py) and listed in the MATS_JSON script header.
+
+MAT_W = 44             -- playmat size in table units (it covers the owner's battlefield...)
+MAT_D = 16
+MAT_Z = 9.5            -- ...centred this far from the middle line)
+MAT_THICKNESS = 0.1
+MATS = {}              -- { { name = ..., url = ... }, ... }
+
+local function matUrl(name)
+  for _, m in ipairs(MATS) do
+    if m.name == name then return m.url end
+  end
+  return nil
+end
+
+-- Locks the mat in place and scales it to cover the owner's battlefield.
+local function fitPlaymat(tile, color)
+  if tile == nil or L == nil then return end
+  local b = boundsSize(tile)
+  local s = tile.getScale()
+  if b and b.x > 0 and b.z > 0 then
+    tile.setScale({ x = s.x * MAT_W / b.x, y = s.y, z = s.z * MAT_D / b.z })
+  end
+  tile.setPosition({ x = 0, y = L.feltY + MAT_THICKNESS / 2, z = sideSign(color) * MAT_Z })
+  tile.setLock(true)
+  tile.interactable = false
+end
+
+-- Replaces a seat's playmat (name nil or unknown: no playmat).
+function setPlaymat(color, name)
+  local old = mats[color] and getObjectFromGUID(mats[color].guid) or nil
+  if old then old.destruct() end
+  mats[color] = nil
+  local url = matUrl(name)
+  if url == nil or L == nil then return end
+  local tile = spawnObjectData({
+    data = {
+      Name = "Custom_Tile",
+      Nickname = color .. " playmat: " .. name,
+      Locked = true,
+      CustomImage = {
+        ImageURL = url, ImageSecondaryURL = "", ImageScalar = 1, WidthScale = 0,
+        CustomTile = { Type = 0, Thickness = MAT_THICKNESS, Stackable = false, Stretch = true },
+      },
+    },
+    position = { x = 0, y = L.feltY + MAT_THICKNESS / 2, z = sideSign(color) * MAT_Z },
+    rotation = { x = 0, y = seatYaw(color), z = 0 },
+    callback_function = function(o)
+      Wait.frames(function() fitPlaymat(o, color) end, 2)
+    end,
+  })
+  mats[color] = { name = name, guid = tile.getGUID() }
+end
+
+-- Dropdown handler; each seat's dropdown is only shown to that seat.
+function onMatChosen(player, value, id)
+  local color = id:match("^mat_(%a+)$")
+  if color == nil or player.color ~= color then return end
+  setPlaymat(color, value)
+end
+
 -- ---------------------------------------------------------------- privacy
 -- TTS can lose a card's "invisible to" list when a player picks it up, moves
 -- or flips it, so private cards are re-hidden on every pickup, drop and flip
@@ -1243,7 +1309,8 @@ function onSave()
   for color in pairs(bots) do table.insert(botList, color) end
   return JSON.encode({ draft = draft:serialize(), discard = discardGuid, bots = botList,
                        ready = ready, piles = piles, playing = playing, firstPlayer = firstPlayer,
-                       booster = booster, owned = owned, tutored = tutored, gameNumber = gameNumber })
+                       booster = booster, owned = owned, tutored = tutored, gameNumber = gameNumber,
+                       mats = mats })
 end
 
 function onLoad(saved)
@@ -1269,6 +1336,7 @@ function onLoad(saved)
     owned = data.owned or {}
     tutored = data.tutored or {}
     gameNumber = data.gameNumber or 1
+    mats = data.mats or {}
   else
     draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48 })
   end
@@ -1276,10 +1344,16 @@ function onLoad(saved)
   BASIC_LANDS = {}
   if BASIC_LANDS_JSON then BASIC_LANDS = JSON.decode(BASIC_LANDS_JSON) or {} end
   loadTokens()
+  if MATS_JSON then MATS = JSON.decode(MATS_JSON) or {} end
 
   Wait.frames(function()
     computeLayout()
     placeZones()
+    -- Playmats are saved with the table; interactable is not, so reapply it.
+    for color, m in pairs(mats) do
+      local tile = getObjectFromGUID(m.guid)
+      if tile then fitPlaymat(tile, color) else mats[color] = nil end
+    end
     -- Buttons, menus and visibility are not kept across a reload: reapply them.
     for _, id in ipairs(draft.pack) do
       local card = getObjectFromGUID(id)

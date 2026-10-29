@@ -150,33 +150,43 @@ def _zones() -> list[dict[str, Any]]:
 
 
 def global_lua(basic_lands: list[dict[str, Any]] | None = None,
-               tokens: dict[str, Any] | None = None) -> str:
-    """The Global script: basic-land and token data, rules engine, then the table adapter.
+               tokens: dict[str, Any] | None = None,
+               mats: list[dict[str, str]] | None = None) -> str:
+    """The Global script: basic-land, token and playmat data, rules engine, then the table adapter.
 
-    ``tokens`` is ``{"tokens": {label: card data}, "makers": {card id: [label, ...]}}``.
+    ``tokens`` is ``{"tokens": {label: card data}, "makers": {card id: [label, ...]}}``;
+    ``mats`` is ``[{"name": ..., "url": ...}, ...]``.
     """
     pkg = resources.files("lsv_duel_draft") / "lua"
     lands_json = json.dumps(basic_lands or [])
     tokens_json = json.dumps(tokens or {"tokens": {}, "makers": {}})
-    if "]==]" in lands_json + tokens_json:
+    mats_json = json.dumps(mats or [])
+    if "]==]" in lands_json + tokens_json + mats_json:
         raise ValueError("card text would end the Lua long string early")
-    header = f"BASIC_LANDS_JSON = [==[{lands_json}]==]\nTOKENS_JSON = [==[{tokens_json}]==]\n"
+    header = (f"BASIC_LANDS_JSON = [==[{lands_json}]==]\nTOKENS_JSON = [==[{tokens_json}]==]\n"
+              f"MATS_JSON = [==[{mats_json}]==]\n")
     return (header + (pkg / "draft_core.lua").read_text(encoding="utf-8") + "\n"
             + (pkg / "table.lua").read_text(encoding="utf-8"))
 
 
-def global_xml() -> str:
-    """The Global UI (status bar, start button, per-seat pick prompts)."""
-    return (resources.files("lsv_duel_draft") / "lua" / "ui.xml").read_text(encoding="utf-8")
+def global_xml(mat_names: Sequence[str] = ()) -> str:
+    """The Global UI (status bar, buttons, per-seat prompts), with one playmat option per mat."""
+    xml = (resources.files("lsv_duel_draft") / "lua" / "ui.xml").read_text(encoding="utf-8")
+    if any(c in name for name in mat_names for c in '<>&"'):
+        raise ValueError("playmat names must not need XML escaping (TTS shows entities literally)")
+    options = '<Option selected="true">None</Option>' + "".join(f"<Option>{n}</Option>" for n in mat_names)
+    return xml.replace("<!--MAT_OPTIONS-->", options)
 
 
 def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_name: str,
                basics: list[Card] | None = None, tokens: list[Token] | None = None,
-               makers: dict[str, list[str]] | None = None) -> dict[str, Any]:
+               makers: dict[str, list[str]] | None = None,
+               mats: list[dict[str, str]] | None = None) -> dict[str, Any]:
     """The complete save: table, zones, cube deck, scripts and UI.
 
     Basic lands share the front sheets, placed after the cube's cards. Tokens
     have their own sheets; ``makers`` maps cube card id -> token labels it makes.
+    ``mats`` lists the playmats players can choose (``name`` and image ``url``).
     """
     basics = basics or []
     fronts, backs = assign_slots(cards + basics)
@@ -201,8 +211,8 @@ def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_
         "Rules": "",
         "TabStates": {},
         "Hands": {"Enable": True, "DisableUnused": False, "Hiding": 0},
-        "LuaScript": global_lua(lands, token_data),
+        "LuaScript": global_lua(lands, token_data, mats),
         "LuaScriptState": "",
-        "XmlUI": global_xml(),
+        "XmlUI": global_xml([m["name"] for m in mats or []]),
         "ObjectStates": [*_zones(), build_cube_deck(cards, fronts[:n], backs[:n], sheets, back_url)],
     }

@@ -165,3 +165,36 @@ def test_swap_cards_replaces_by_name_in_place() -> None:
     swapped, absent = swap_cards(cards, {"Cogwork Librarian": tutor, "Not Here": tutor})
     assert [c.front.name for c in swapped] == ["Bolt", "Booster Tutor"]
     assert absent == ["Not Here"]
+
+
+# ------------------------------------------------------------------ playmats
+
+
+def test_playmats_render_distinct_images_of_the_mat_shape(tmp_path: Path) -> None:
+    from lsv_duel_draft import playmats
+
+    written = playmats.render_all(tmp_path)
+    assert len(written) == len(playmats.THEMES) >= 10
+    names = [n for n, _ in written]
+    files = [f for _, f in written]
+    assert len(set(files)) == len(files), "every mat looks different (content-hashed names)"
+    with Image.open(tmp_path / files[0]) as img:
+        assert img.size == playmats.MAT_SIZE
+    assert playmats.render_all(tmp_path) == written, "drawing is deterministic"
+    assert all(n.isprintable() and not any(c in n for c in '<>&"') for n in names)
+
+
+def test_playmats_reach_the_script_and_the_dropdowns() -> None:
+    import json
+
+    cards = [Card("a", Face("Bolt", "", "u/a"))]
+    fronts, _ = assign_slots(cards)
+    sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
+    mats = [{"name": "Volcano", "url": "https://h/v.jpg"}, {"name": "Dragon's Hoard", "url": "https://h/d.jpg"}]
+    save = build_save(cards, sheets, "https://h/back.jpg", "LSVCube", mats=mats)
+    line = save["LuaScript"].splitlines()[2]
+    assert json.loads(line.removeprefix("MATS_JSON = [==[").removesuffix("]==]")) == mats
+    xml = save["XmlUI"]
+    assert "<!--MAT_OPTIONS-->" not in xml
+    assert xml.count("<Option>Dragon's Hoard</Option>") == 2, "one dropdown per seat"
+    assert xml.count('<Option selected="true">None</Option>') == 2

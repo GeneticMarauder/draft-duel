@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from lsv_duel_draft import playmats
 from lsv_duel_draft import sheets as sh
 from lsv_duel_draft.models import Card, Sheet, Token
 from lsv_duel_draft.sources import (
@@ -68,8 +69,8 @@ def tts_saves_dirs() -> list[Path]:
 
 
 def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: str,
-               tokens: list[Token] | None = None) -> tuple[dict[int, Sheet], str]:
-    """Render front, back-face and token sheets and the card back; return sheets by id and the back URL."""
+               tokens: list[Token] | None = None) -> tuple[dict[int, Sheet], str, list[dict[str, str]]]:
+    """Render card, token and playmat images; return sheets by id, the card back URL and the mats."""
     SHEETS_DIR.mkdir(exist_ok=True)
     sheets: dict[int, Sheet] = {}
     written: set[str] = set()
@@ -88,11 +89,15 @@ def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: st
 
     back_name = sh.save_hashed(sh.card_back(images[MAGIC_CARD_BACK]), SHEETS_DIR, "cardback")
     written.add(back_name)
+    mats = []
+    for name, filename in playmats.render_all(SHEETS_DIR):
+        written.add(filename)
+        mats.append({"name": name, "url": raw_url(slug, branch, filename)})
 
     for old in SHEETS_DIR.glob("*.jpg"):
         if old.name not in written:
             old.unlink()
-    return sheets, raw_url(slug, branch, back_name)
+    return sheets, raw_url(slug, branch, back_name), mats
 
 
 def push_sheets(cube: str) -> None:
@@ -139,11 +144,11 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  images {n}/{len(urls)}")
 
     # Basics go on the front sheets after the cube's cards (see tts_save.build_save).
-    sheets, back_url = render_all(everything, images, slug, args.branch, tokens)
+    sheets, back_url, mats = render_all(everything, images, slug, args.branch, tokens)
     dfc = sum(1 for c in cards if c.back)
-    print(f"Rendered {len(sheets)} sheets ({dfc} double-faced cards).")
+    print(f"Rendered {len(sheets)} sheets ({dfc} double-faced cards) and {len(mats)} playmats.")
 
-    save = build_save(cards, sheets, back_url, args.cube, basics, tokens, makers)
+    save = build_save(cards, sheets, back_url, args.cube, basics, tokens, makers, mats)
     DIST_DIR.mkdir(exist_ok=True)
     out = DIST_DIR / f"{SAVE_NAME}.json"
     out.write_text(json.dumps(save, indent=1, ensure_ascii=False), encoding="utf-8")

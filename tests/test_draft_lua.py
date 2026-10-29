@@ -39,6 +39,7 @@ def make_lua(with_table: bool = False) -> LuaRuntime:
             for n in ("Plains", "Island", "Swamp", "Mountain", "Forest")
         ])
         g.TOKENS_JSON = json.dumps(TOKENS)
+        g.MATS_JSON = json.dumps([{"name": n, "url": f"https://h/{n}.jpg"} for n in ("Volcano", "Aurora")])
         lua.execute((LUA_DIR / "table.lua").read_text(encoding="utf-8"))
     return lua
 
@@ -864,3 +865,61 @@ def test_next_game_needs_a_confirming_second_click() -> None:
     g.onNextGameClicked(g.Player.White)
     assert g.Mock.ui["nextGameButton.text"] == "Click again to confirm"
     assert g.Mock.ui["statusPanel.active"] == "false", "still playing after single clicks"
+
+
+# ------------------------------------------------------------------ playmats
+
+
+def _mats(g) -> list:
+    return [o for o in g.Mock.objects.values() if o.kind == "Custom_Tile"]
+
+
+def test_players_choose_replace_and_remove_their_playmat() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.Mock.flush()
+
+    g.onMatChosen(g.Player.White, "Volcano", "mat_White")
+    g.Mock.flush()
+    (mat,) = _mats(g)
+    assert mat.data.CustomImage.ImageURL == "https://h/Volcano.jpg"
+    assert mat.pos.z < 0 and mat.locked and mat.interactable is False, "locked under White's half"
+    assert mat.pos.y < 1.1, "flat on the felt, under the cards"
+
+    g.onMatChosen(g.Player.White, "Aurora", "mat_White")  # replaces, never stacks
+    g.onMatChosen(g.Player.Red, "Volcano", "mat_Red")
+    g.Mock.flush()
+    mats = _mats(g)
+    assert sorted((m.data.Nickname, m.pos.z > 0) for m in mats) == [
+        ("Red playmat: Volcano", True), ("White playmat: Aurora", False)]
+
+    g.onMatChosen(g.Player.Red, "Aurora", "mat_White")  # someone else's dropdown does nothing
+    g.Mock.flush()
+    assert any(m.data.Nickname == "White playmat: Aurora" for m in _mats(g))
+
+    g.onMatChosen(g.Player.White, "None", "mat_White")
+    g.Mock.flush()
+    assert [m.data.Nickname for m in _mats(g)] == ["Red playmat: Volcano"]
+
+
+def test_playmat_survives_a_reload_and_ignores_the_game() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    g.onMatChosen(g.Player.White, "Volcano", "mat_White")
+    g.Mock.flush()
+    (mat,) = _mats(g)
+    saved = g.onSave()
+    mat.interactable = True  # TTS does not save this
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert mat.interactable is False
+    g.onMatChosen(g.Player.White, "Aurora", "mat_White")  # the reloaded mat is still tracked
+    g.Mock.flush()
+    assert [m.data.Nickname for m in _mats(g)] == ["White playmat: Aurora"]
+
+    g.onNextGameClicked(g.Player.White)
+    g.onNextGameClicked(g.Player.White)
+    g.Mock.flush()
+    assert len(_mats(g)) == 1, "Next game leaves the playmat alone"
