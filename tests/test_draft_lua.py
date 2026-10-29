@@ -884,24 +884,25 @@ def test_players_choose_replace_and_remove_their_playmat() -> None:
     g.onMatChosen(g.Player.White, "Volcano", "mat_White")
     g.Mock.flush()
     (mat,) = _mats(g)
-    assert mat.data.CustomImage.ImageURL == "https://h/Volcano.jpg"
+    assert mat.custom.image == "https://h/Volcano.jpg" and mat.name == "White playmat: Volcano"
     assert mat.pos.z < 0 and mat.locked and mat.interactable is False, "locked under White's half"
     assert mat.pos.y < 1.1, "flat on the felt, under the cards"
+    assert mat.scale.x == mat.scale.z == 8, "2-unit-deep tile scaled to 16 deep (44 wide)"
 
     g.onMatChosen(g.Player.White, "Aurora", "mat_White")  # replaces, never stacks
     g.onMatChosen(g.Player.Red, "Volcano", "mat_Red")
     g.Mock.flush()
     mats = _mats(g)
-    assert sorted((m.data.Nickname, m.pos.z > 0) for m in mats) == [
+    assert sorted((m.name, m.pos.z > 0) for m in mats) == [
         ("Red playmat: Volcano", True), ("White playmat: Aurora", False)]
 
     g.onMatChosen(g.Player.Red, "Aurora", "mat_White")  # someone else's dropdown does nothing
     g.Mock.flush()
-    assert any(m.data.Nickname == "White playmat: Aurora" for m in _mats(g))
+    assert any(m.name == "White playmat: Aurora" for m in _mats(g))
 
     g.onMatChosen(g.Player.White, "None", "mat_White")
     g.Mock.flush()
-    assert [m.data.Nickname for m in _mats(g)] == ["Red playmat: Volcano"]
+    assert [m.name for m in _mats(g)] == ["Red playmat: Volcano"]
 
 
 def test_playmat_survives_a_reload_and_ignores_the_game() -> None:
@@ -917,7 +918,7 @@ def test_playmat_survives_a_reload_and_ignores_the_game() -> None:
     assert mat.interactable is False
     g.onMatChosen(g.Player.White, "Aurora", "mat_White")  # the reloaded mat is still tracked
     g.Mock.flush()
-    assert [m.data.Nickname for m in _mats(g)] == ["White playmat: Aurora"]
+    assert [m.name for m in _mats(g)] == ["White playmat: Aurora"]
 
     g.onNextGameClicked(g.Player.White)
     g.onNextGameClicked(g.Player.White)

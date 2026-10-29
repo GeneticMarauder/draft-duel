@@ -1117,10 +1117,12 @@ end
 -- their half of the table; cards and tokens rest on it. The artwork is drawn
 -- by the builder (playmats.py) and listed in the MATS_JSON script header.
 
-MAT_W = 44             -- playmat size in table units (it covers the owner's battlefield...)
-MAT_D = 16
-MAT_Z = 9.5            -- ...centred this far from the middle line)
-MAT_THICKNESS = 0.1
+MAT_D = 16             -- playmat depth in table units (it covers the owner's battlefield...)
+MAT_Z = 9.5            -- ...centred this far from the middle line); the width (44) follows
+MAT_THICKNESS = 0.1    -- the image's 2048 x 744 shape
+-- Measured in TTS: a custom tile at scale 1 is 2 units deep. (Its bounds are not
+-- known until the image has loaded, so the scale is set up front.)
+MAT_SCALE = MAT_D / 2
 MATS = {}              -- { { name = ..., url = ... }, ... }
 
 local function matUrl(name)
@@ -1130,14 +1132,10 @@ local function matUrl(name)
   return nil
 end
 
--- Locks the mat in place and scales it to cover the owner's battlefield.
+-- Locks the mat in place over the owner's battlefield.
 local function fitPlaymat(tile, color)
   if tile == nil or L == nil then return end
-  local b = boundsSize(tile)
-  local s = tile.getScale()
-  if b and b.x > 0 and b.z > 0 then
-    tile.setScale({ x = s.x * MAT_W / b.x, y = s.y, z = s.z * MAT_D / b.z })
-  end
+  tile.setScale({ x = MAT_SCALE, y = 1, z = MAT_SCALE })
   tile.setPosition({ x = 0, y = L.feltY + MAT_THICKNESS / 2, z = sideSign(color) * MAT_Z })
   tile.setLock(true)
   tile.interactable = false
@@ -1150,22 +1148,22 @@ function setPlaymat(color, name)
   mats[color] = nil
   local url = matUrl(name)
   if url == nil or L == nil then return end
-  local tile = spawnObjectData({
-    data = {
-      Name = "Custom_Tile",
-      Nickname = color .. " playmat: " .. name,
-      Locked = true,
-      CustomImage = {
-        ImageURL = url, ImageSecondaryURL = "", ImageScalar = 1, WidthScale = 0,
-        CustomTile = { Type = 0, Thickness = MAT_THICKNESS, Stackable = false, Stretch = true },
-      },
-    },
+  -- spawnObject + setCustomObject in the same frame is TTS's way to make a
+  -- custom tile (raw spawnObjectData without every field fails to load).
+  local tile = spawnObject({
+    type = "Custom_Tile",
     position = { x = 0, y = L.feltY + MAT_THICKNESS / 2, z = sideSign(color) * MAT_Z },
     rotation = { x = 0, y = seatYaw(color), z = 0 },
+    scale = { x = MAT_SCALE, y = 1, z = MAT_SCALE },
+    sound = false,
     callback_function = function(o)
+      o.setName(color .. " playmat: " .. name)
       Wait.frames(function() fitPlaymat(o, color) end, 2)
     end,
   })
+  if tile == nil then return end
+  tile.setCustomObject({ image = url, type = 0, thickness = MAT_THICKNESS, stackable = false, stretch = true })
+  tile.setLock(true)
   mats[color] = { name = name, guid = tile.getGUID() }
 end
 
