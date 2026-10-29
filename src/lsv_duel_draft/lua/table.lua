@@ -178,6 +178,11 @@ function onChat(message, player)
     printDebug()
     return false
   end
+  if message == "!hide" then
+    rehideAll()
+    broadcastToAll("Private cards re-hidden.", { 0.6, 0.85, 1 })
+    return false
+  end
   local n = message:match("^!draftauto%s*(%d*)$")
   if n then
     autoPick(tonumber(n) or 48)
@@ -681,7 +686,63 @@ function startGame()
   updateUI()
 end
 
+-- ---------------------------------------------------------------- privacy
+-- TTS can lose a card's "invisible to" list when a player picks it up, moves
+-- or flips it, so private cards are re-hidden on every pickup, drop and flip
+-- (and again a few frames later, after TTS has finished its own handling).
+
+-- Seat a card is private to, or nil if it is public.
+function privateOwner(obj)
+  if obj == nil or draft == nil then return nil end
+  local id = obj.getGUID()
+  for _, color in ipairs(COLORS) do
+    if inList(draft.picks[color], id) and not playing then return color end
+    if piles[color] and piles[color].sideboard == id then return color end
+  end
+  if building and isDeckCard(obj) then
+    local z = obj.getPosition().z
+    if z < -1 then return COLORS[1] end
+    if z > 1 then return COLORS[2] end
+  end
+  return nil
+end
+
+function rehide(obj, owner)
+  owner = owner or privateOwner(obj)
+  if owner == nil then return end
+  obj.setInvisibleTo(othersThan(owner))
+  Wait.frames(function()
+    if obj ~= nil then obj.setInvisibleTo(othersThan(owner)) end
+  end, 3)
+end
+
+-- Re-applies privacy to every card on the table (chat command "!hide").
+function rehideAll()
+  for _, o in ipairs(getObjects()) do
+    local owner = privateOwner(o)
+    if owner then o.setInvisibleTo(othersThan(owner)) end
+  end
+  layoutPack()
+end
+
+function onObjectPickUp(color, obj)
+  rehide(obj)
+end
+
+-- A double-faced card flipped to its other face becomes a new object.
+function onObjectStateChange(obj, oldGuid)
+  if draft then
+    for _, color in ipairs(COLORS) do
+      for i, id in ipairs(draft.picks[color]) do
+        if id == oldGuid then draft.picks[color][i] = obj.getGUID() end
+      end
+    end
+  end
+  rehide(obj)
+end
+
 function onObjectDrop(color, obj)
+  rehide(obj)
   if not building or ready[color] or not inList(COLORS, color) or not isDeckCard(obj) then return end
   local sign = sideSign(color)
   local p = obj.getPosition()

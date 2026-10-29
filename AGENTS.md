@@ -81,7 +81,7 @@ CubeCobra cube (default `LSVCube`). Two halves:
   shuffles, deals 7 to each hand and spawns 20-life counters. `ready`, `piles`, `playing` persist.
 - `ui.xml` — status bar, Start Draft button, Reset view, per-seat "your pick" prompts.
 
-**Privacy is per card, not hidden zones.** Pack cards use `setHiddenFrom(others)` (opponent sees
+**Privacy is per card, not hidden zones** (re-applied on every pickup/drop/state change via `rehide`, plus `!hide`). Pack cards use `setHiddenFrom(others)` (opponent sees
 backs); picks use `setInvisibleTo(others)`. Hidden zones were dropped: TTS draws them as solid
 blocks in the owner's color and ignores their tint. Hand zones exist only to define seats.
 

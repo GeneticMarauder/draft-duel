@@ -544,3 +544,65 @@ def test_game_state_survives_a_reload() -> None:
     g.Mock.flush()
     assert g.Mock.ui["statusText"].startswith("Game on!")
     assert len([o for o in g.Mock.objects.values() if o.kind == "Counter"]) == 2, "no duplicate counters"
+
+
+# ------------------------------------------------------------------ privacy after moves
+
+
+def _picks_of(g, color: str) -> list:
+    sign = -1 if color == "White" else 1
+    return [o for o in g.Mock.objects.values()
+            if o.kind == "Card" and o.scale.x == g.PICK_SCALE and o.pos.z * sign > 0]
+
+
+def _hidden_from_red(o) -> bool:
+    return o.invisibleTo is not None and "Red" in set(_lua_list(o.invisibleTo))
+
+
+def test_picks_moved_mid_draft_stay_hidden() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    _start_vs_bot(lua)
+    _human_picks(lua, 4)
+    card = _picks_of(g, "White")[0]
+    card.invisibleTo = None  # TTS dropped the invisibility while it was held
+    g.onObjectPickUp("White", card)
+    assert _hidden_from_red(card)
+    card.invisibleTo = None
+    g.onObjectDrop("White", card)
+    g.Mock.flush()
+    assert _hidden_from_red(card)
+
+
+def test_deck_editor_cards_moved_stay_hidden() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    card = next(o for o in _deck_cards(g) if o.pos.z < 0)
+    card.invisibleTo = None
+    g.onObjectPickUp("White", card)
+    assert _hidden_from_red(card)
+
+
+def test_flipped_double_faced_pick_stays_hidden_and_tracked() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    _start_vs_bot(lua)
+    _human_picks(lua, 2)
+    old = _picks_of(g, "White")[0]
+    flipped = g.Mock.newObject("flip01", "Card")  # TTS replaces the object on a state change
+    flipped.pos = old.pos
+    g.Mock.objects[old.guid] = None
+    g.onObjectStateChange(flipped, old.guid)
+    g.Mock.flush()
+    assert _hidden_from_red(flipped)
+    assert '"flip01"' in g.onSave(), "the pick list follows the flipped card"
+
+
+def test_hide_command_rehides_everything() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    white = [o for o in _deck_cards(g) if o.pos.z < 0]
+    for o in white:
+        o.invisibleTo = None
+    assert g.onChat("!hide", g.Player.White) is False
+    assert all(_hidden_from_red(o) for o in white)

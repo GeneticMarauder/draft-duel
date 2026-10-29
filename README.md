@@ -34,6 +34,8 @@ The starting player alternates every pack. 24 packs gives each player 48 cards.
    random player is chosen to go first.
 7. Hold **Alt** while hovering a card for a large preview. **Reset view** (top right) re-frames your camera.
 
+If a private card ever shows up for your opponent, type `!hide` in chat to re-hide every private card.
+
 Testing helpers (type in chat): `!draftauto 10` makes 10 random picks for you; `!draftdebug` prints
 the table and zone geometry.
 
