@@ -874,50 +874,64 @@ def _mats(g) -> list:
     return [o for o in g.Mock.objects.values() if o.kind == "Custom_Tile"]
 
 
+def _pick(g, color: str, index: int, as_color: str | None = None) -> None:
+    """Opens the seat's picker with its button, then clicks thumbnail ``index`` (0 = None)."""
+    player = g.Player[as_color or color]
+    g.onMatButton(player, "-1", f"matButton_{color}")
+    g.onMatPick(player, "-1", f"matPick_{color}_{index}")
+    g.Mock.flush()
+
+
 def test_players_choose_replace_and_remove_their_playmat() -> None:
     lua = make_lua(with_table=True)
     g = lua.globals()
     g.Mock.setup(515)
     g.onLoad("")
     g.Mock.flush()
+    assert g.Mock.ui["matButton_White.text"] == "Playmat: None"
 
-    g.onMatChosen(g.Player.White, "Volcano", "mat_White")
+    g.onMatButton(g.Player.White, "-1", "matButton_White")
+    assert g.Mock.ui["matPicker_White.active"] == "true", "the button opens the picker"
+    g.onMatPick(g.Player.White, "-1", "matPick_White_1")  # Volcano
     g.Mock.flush()
+    assert g.Mock.ui["matPicker_White.active"] == "false", "picking closes it"
+    assert g.Mock.ui["matButton_White.text"] == "Playmat: Volcano"
     (mat,) = _mats(g)
     assert mat.custom.image == "https://h/Volcano.jpg" and mat.name == "White playmat: Volcano"
     assert mat.pos.z < 0 and mat.locked and mat.interactable is False, "locked under White's half"
     assert mat.pos.y < 1.1, "flat on the felt, under the cards"
     assert mat.scale.x == mat.scale.z == 8, "2-unit-deep tile scaled to 16 deep (44 wide)"
 
-    g.onMatChosen(g.Player.White, "Aurora", "mat_White")  # replaces, never stacks
-    g.onMatChosen(g.Player.Red, "Volcano", "mat_Red")
-    g.Mock.flush()
-    mats = _mats(g)
-    assert sorted((m.name, m.pos.z > 0) for m in mats) == [
+    _pick(g, "White", 2)  # Aurora replaces Volcano, never stacks
+    _pick(g, "Red", 1)
+    assert sorted((m.name, m.pos.z > 0) for m in _mats(g)) == [
         ("Red playmat: Volcano", True), ("White playmat: Aurora", False)]
 
-    g.onMatChosen(g.Player.Red, "Aurora", "mat_White")  # someone else's dropdown does nothing
-    g.Mock.flush()
+    _pick(g, "White", 1, as_color="Red")  # someone else's picker does nothing
     assert any(m.name == "White playmat: Aurora" for m in _mats(g))
 
-    g.onMatChosen(g.Player.White, "None", "mat_White")
-    g.Mock.flush()
+    g.onMatButton(g.Player.White, "-1", "matButton_White")
+    g.onMatButton(g.Player.White, "-1", "matClose_White")
+    assert g.Mock.ui["matPicker_White.active"] == "false", "Close closes it"
+
+    _pick(g, "White", 0)
     assert [m.name for m in _mats(g)] == ["Red playmat: Volcano"]
+    assert g.Mock.ui["matButton_White.text"] == "Playmat: None"
 
 
 def test_playmat_survives_a_reload_and_ignores_the_game() -> None:
     lua = make_lua(with_table=True)
     g = _in_game(lua)
-    g.onMatChosen(g.Player.White, "Volcano", "mat_White")
-    g.Mock.flush()
+    _pick(g, "White", 1)
     (mat,) = _mats(g)
     saved = g.onSave()
     mat.interactable = True  # TTS does not save this
+    g.Mock.ui["matButton_White.text"] = "Playmat: None"  # nor the UI's labels
     g.onLoad(saved)
     g.Mock.flush()
     assert mat.interactable is False
-    g.onMatChosen(g.Player.White, "Aurora", "mat_White")  # the reloaded mat is still tracked
-    g.Mock.flush()
+    assert g.Mock.ui["matButton_White.text"] == "Playmat: Volcano", "the button shows the mat after a reload"
+    _pick(g, "White", 2)  # the reloaded mat is still tracked
     assert [m.name for m in _mats(g)] == ["White playmat: Aurora"]
 
     g.onNextGameClicked(g.Player.White)

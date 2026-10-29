@@ -169,13 +169,52 @@ def global_lua(basic_lands: list[dict[str, Any]] | None = None,
             + (pkg / "table.lua").read_text(encoding="utf-8"))
 
 
-def global_xml(mat_names: Sequence[str] = ()) -> str:
-    """The Global UI (status bar, buttons, per-seat prompts), with one playmat option per mat."""
-    xml = (resources.files("lsv_duel_draft") / "lua" / "ui.xml").read_text(encoding="utf-8")
-    if any(c in name for name in mat_names for c in '<>&"'):
+def _mat_cell(color: str, index: int, name: str, image: str | None) -> str:
+    """One picker cell: a thumbnail button (index 0 = no playmat) and the mat's name."""
+    if image:
+        button = (f'<Button id="matPick_{color}_{index}" onClick="onMatPick" image="{image}" preferredHeight="84" '
+                  'colors="#FFFFFF|#E0E0E0|#BDBDBD|#555555"></Button>')
+    else:
+        button = (f'<Button id="matPick_{color}_{index}" onClick="onMatPick" preferredHeight="84" fontSize="18" '
+                  'textColor="#FFFFFF" colors="#37474F|#455A64|#263238|#555555">No playmat</Button>')
+    return (f'<Panel><VerticalLayout spacing="2">{button}'
+            f'<Text preferredHeight="24" fontSize="15" color="#FFFFFF">{name}</Text></VerticalLayout></Panel>')
+
+
+def mat_pickers(mats: Sequence[dict[str, str]]) -> str:
+    """Per-seat playmat pickers: a mid-screen grid of thumbnails, shown only to that seat.
+
+    Thumbnail ``i`` (1-based, ``MATS_JSON`` order) is the custom UI asset ``matthumb<i>``.
+    """
+    if any(c in m["name"] for m in mats for c in '<>&"'):
         raise ValueError("playmat names must not need XML escaping (TTS shows entities literally)")
-    options = '<Option selected="true">None</Option>' + "".join(f"<Option>{n}</Option>" for n in mat_names)
-    return xml.replace("<!--MAT_OPTIONS-->", options)
+    panels = []
+    for color in ("White", "Red"):
+        cells = [_mat_cell(color, 0, "None", None)]
+        cells += [_mat_cell(color, i, m["name"], f"matthumb{i}") for i, m in enumerate(mats, 1)]
+        panels.append(
+            f'<Panel id="matPicker_{color}" visibility="{color}" active="false" rectAlignment="MiddleCenter" '
+            'width="1000" height="600" color="#101018F2">'
+            '<VerticalLayout padding="16 16 12 16" spacing="10">'
+            '<HorizontalLayout preferredHeight="36" spacing="10">'
+            '<Text fontSize="22" color="#FFFFFF" alignment="MiddleLeft">Choose your playmat</Text>'
+            f'<Button id="matClose_{color}" preferredWidth="110" fontSize="16" onClick="onMatButton" '
+            'textColor="#FFFFFF" colors="#37474F|#455A64|#263238|#555555">Close</Button>'
+            '</HorizontalLayout>'
+            '<GridLayout cellSize="230 112" spacing="10 10" constraint="FixedColumnCount" constraintCount="4">'
+            + "".join(cells) + '</GridLayout></VerticalLayout></Panel>')
+    return "\n".join(panels)
+
+
+def global_xml(mats: Sequence[dict[str, str]] = ()) -> str:
+    """The Global UI (status bar, buttons, per-seat prompts and playmat pickers)."""
+    xml = (resources.files("lsv_duel_draft") / "lua" / "ui.xml").read_text(encoding="utf-8")
+    return xml.replace("<!--MAT_PICKERS-->", mat_pickers(mats))
+
+
+def ui_assets(mats: Sequence[dict[str, str]]) -> list[dict[str, Any]]:
+    """Playmat thumbnails as custom UI images (``matthumb<i>``) for the pickers."""
+    return [{"Type": 0, "Name": f"matthumb{i}", "URL": m["thumb"]} for i, m in enumerate(mats, 1) if m.get("thumb")]
 
 
 def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_name: str,
@@ -186,7 +225,7 @@ def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_
 
     Basic lands share the front sheets, placed after the cube's cards. Tokens
     have their own sheets; ``makers`` maps cube card id -> token labels it makes.
-    ``mats`` lists the playmats players can choose (``name`` and image ``url``).
+    ``mats`` lists the playmats players can choose (``name``, image ``url`` and ``thumb``).
     """
     basics = basics or []
     fronts, backs = assign_slots(cards + basics)
@@ -213,6 +252,7 @@ def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_
         "Hands": {"Enable": True, "DisableUnused": False, "Hiding": 0},
         "LuaScript": global_lua(lands, token_data, mats),
         "LuaScriptState": "",
-        "XmlUI": global_xml([m["name"] for m in mats or []]),
+        "XmlUI": global_xml(mats or []),
+        "CustomUIAssets": ui_assets(mats or []),
         "ObjectStates": [*_zones(), build_cube_deck(cards, fronts[:n], backs[:n], sheets, back_url)],
     }

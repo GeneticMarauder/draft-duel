@@ -320,9 +320,18 @@ def render(name: str) -> Image.Image:
     return THEMES[name](random.Random(name)).convert("RGB")
 
 
-def render_all(out_dir: Path) -> list[tuple[str, str]]:
-    """Writes every playmat as a content-hashed JPEG; returns (name, filename) pairs."""
+THUMB_SIZE = (440, 160)  # picture on the in-game playmat picker
+
+
+def render_all(out_dir: Path) -> list[tuple[str, str, str]]:
+    """Writes every playmat and a small thumbnail as content-hashed JPEGs.
+
+    Returns ``(name, mat filename, thumbnail filename)`` per theme, in ``THEMES`` order.
+    """
     out = []
     for i, name in enumerate(THEMES):
-        out.append((name, save_hashed(render(name), out_dir, f"mat{i + 1:02d}")))
+        img = render(name)
+        mat = save_hashed(img, out_dir, f"mat{i + 1:02d}")
+        thumb = save_hashed(img.resize(THUMB_SIZE, Image.LANCZOS), out_dir, f"matthumb{i + 1:02d}")
+        out.append((name, mat, thumb))
     return out

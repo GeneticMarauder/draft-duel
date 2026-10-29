@@ -175,11 +175,13 @@ def test_playmats_render_distinct_images_of_the_mat_shape(tmp_path: Path) -> Non
 
     written = playmats.render_all(tmp_path)
     assert len(written) == len(playmats.THEMES) >= 10
-    names = [n for n, _ in written]
-    files = [f for _, f in written]
+    names = [n for n, _, _ in written]
+    files = [f for _, f, _ in written]
     assert len(set(files)) == len(files), "every mat looks different (content-hashed names)"
     with Image.open(tmp_path / files[0]) as img:
         assert img.size == playmats.MAT_SIZE
+    with Image.open(tmp_path / written[0][2]) as thumb:
+        assert thumb.size == playmats.THUMB_SIZE
     assert playmats.render_all(tmp_path) == written, "drawing is deterministic"
     assert all(n.isprintable() and not any(c in n for c in '<>&"') for n in names)
 
@@ -190,11 +192,18 @@ def test_playmats_reach_the_script_and_the_dropdowns() -> None:
     cards = [Card("a", Face("Bolt", "", "u/a"))]
     fronts, _ = assign_slots(cards)
     sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
-    mats = [{"name": "Volcano", "url": "https://h/v.jpg"}, {"name": "Dragon's Hoard", "url": "https://h/d.jpg"}]
+    mats = [{"name": "Volcano", "url": "https://h/v.jpg", "thumb": "https://h/vt.jpg"},
+            {"name": "Dragon's Hoard", "url": "https://h/d.jpg", "thumb": "https://h/dt.jpg"}]
     save = build_save(cards, sheets, "https://h/back.jpg", "LSVCube", mats=mats)
     line = save["LuaScript"].splitlines()[2]
     assert json.loads(line.removeprefix("MATS_JSON = [==[").removesuffix("]==]")) == mats
     xml = save["XmlUI"]
-    assert "<!--MAT_OPTIONS-->" not in xml
-    assert xml.count("<Option>Dragon's Hoard</Option>") == 2, "one dropdown per seat"
-    assert xml.count('<Option selected="true">None</Option>') == 2
+    assert "<!--MAT_PICKERS-->" not in xml
+    for color in ("White", "Red"):
+        assert f'id="matPicker_{color}" visibility="{color}"' in xml and f'id="matPick_{color}_0"' in xml
+        assert f'id="matPick_{color}_2" onClick="onMatPick" image="matthumb2"' in xml
+    assert xml.count(">Dragon's Hoard</Text>") == 2, "one picker per seat"
+    assert save["CustomUIAssets"] == [{"Type": 0, "Name": "matthumb1", "URL": "https://h/vt.jpg"},
+                                      {"Type": 0, "Name": "matthumb2", "URL": "https://h/dt.jpg"}]
+    import xml.etree.ElementTree as ET
+    ET.fromstring(f"<root>{xml}</root>")  # well-formed

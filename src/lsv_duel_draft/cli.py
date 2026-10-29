@@ -90,9 +90,9 @@ def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: st
     back_name = sh.save_hashed(sh.card_back(images[MAGIC_CARD_BACK]), SHEETS_DIR, "cardback")
     written.add(back_name)
     mats = []
-    for name, filename in playmats.render_all(SHEETS_DIR):
-        written.add(filename)
-        mats.append({"name": name, "url": raw_url(slug, branch, filename)})
+    for name, filename, thumb in playmats.render_all(SHEETS_DIR):
+        written.update((filename, thumb))
+        mats.append({"name": name, "url": raw_url(slug, branch, filename), "thumb": raw_url(slug, branch, thumb)})
 
     for old in SHEETS_DIR.glob("*.jpg"):
         if old.name not in written:

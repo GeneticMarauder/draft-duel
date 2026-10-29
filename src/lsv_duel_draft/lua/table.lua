@@ -1112,8 +1112,8 @@ function nextGame()
 end
 
 -- ---------------------------------------------------------------- playmats
--- Each seated player picks a playmat from the dropdown at the bottom right
--- (visible only to them). The mat is a locked, non-interactable tile under
+-- Each seated player's "Playmat: <name>" button (bottom right, visible only to
+-- them) opens a mid-screen picker of thumbnails. The mat is a locked, non-interactable tile under
 -- their half of the table; cards and tokens rest on it. The artwork is drawn
 -- by the builder (playmats.py) and listed in the MATS_JSON script header.
 
@@ -1167,11 +1167,36 @@ function setPlaymat(color, name)
   mats[color] = { name = name, guid = tile.getGUID() }
 end
 
--- Dropdown handler; each seat's dropdown is only shown to that seat.
-function onMatChosen(player, value, id)
-  local color = id:match("^mat_(%a+)$")
+-- Labels each seat's button with its current playmat (also after a reload).
+function updateMatButtons()
+  for _, color in ipairs(COLORS) do
+    local name = mats[color] and mats[color].name or "None"
+    UI.setAttribute("matButton_" .. color, "text", "Playmat: " .. name)
+  end
+end
+
+local pickerOpen = {}  -- color -> true while that seat's picker is shown
+
+local function showPicker(color, open)
+  pickerOpen[color] = open
+  UI.setAttribute("matPicker_" .. color, "active", open and "true" or "false")
+end
+
+-- The playmat button (and the picker's Close button) toggle the picker.
+function onMatButton(player, _, id)
+  local color = id:match("^mat%a+_(%a+)$")
   if color == nil or player.color ~= color then return end
-  setPlaymat(color, value)
+  showPicker(color, not pickerOpen[color])
+end
+
+-- A thumbnail in the picker: index 0 is "None", otherwise MATS[index].
+function onMatPick(player, _, id)
+  local color, index = id:match("^matPick_(%a+)_(%d+)$")
+  if color == nil or player.color ~= color then return end
+  local mat = MATS[tonumber(index)]
+  setPlaymat(color, mat and mat.name or nil)
+  showPicker(color, false)
+  updateMatButtons()
 end
 
 -- ---------------------------------------------------------------- privacy
@@ -1352,6 +1377,7 @@ function onLoad(saved)
       local tile = getObjectFromGUID(m.guid)
       if tile then fitPlaymat(tile, color) else mats[color] = nil end
     end
+    updateMatButtons()
     -- Buttons, menus and visibility are not kept across a reload: reapply them.
     for _, id in ipairs(draft.pack) do
       local card = getObjectFromGUID(id)
