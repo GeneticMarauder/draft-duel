@@ -67,6 +67,8 @@ CubeCobra cube (default `LSVCube`). Two halves:
   picker's hidden zone, bots for seats empty at Start Draft, state persisted via `onSave`/`onLoad`.
   Chat commands: `!draftdebug` (geometry dump), `!draftauto [n]` (random picks for testing).
 
+- `ui.xml` — status bar, Start Draft button, per-seat "your pick" prompts.
+
 **Verified in game (Table_RPG)** — keep these when changing layout:
 - Felt top is y≈0.96; table bounds 64 x 43. Hidden zones are thin slabs (y 0.8–1.6) fixed in the
   save and never moved by script. Picks are placed *inside* the slab (never dropped from above).
@@ -74,7 +76,6 @@ CubeCobra cube (default `LSVCube`). Two halves:
   owners see their own picks through a translucent tint of their color (Alt-hover shows clean art).
 - Camera (`frameCamera`) sits slightly *in front of* the hand zone; any further back and the hand's
   in-world copy shows on screen beside TTS's own hand display.
-- `ui.xml` — status bar, Start Draft button, per-seat "your pick" prompts.
 
 **Tests** — `tests/test_draft_lua.py` runs the real Lua under `lupa` against `tests/lua/tts_mock.lua`
 (a mock of the TTS API); keep TTS-specific calls inside the mock's surface or extend the mock.
