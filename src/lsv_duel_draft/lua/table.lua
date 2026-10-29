@@ -895,6 +895,8 @@ function takeFromBooster(color, card)
   local rest = booster.cards
   local taken = card.getGUID()
   booster = nil
+  -- The cube is locked during the game, and a locked deck refuses putObject.
+  if cube then cube.setLock(false) end
   for _, id in ipairs(rest) do
     local o = getObjectFromGUID(id)
     if o then
@@ -912,7 +914,10 @@ function takeFromBooster(color, card)
   card.setPosition(Player[color].getHandTransform().position)
   addPlayMenu(card)
   Wait.time(function()
-    if cube then cube.shuffle() end
+    if cube then
+      cube.shuffle()
+      cube.setLock(true)
+    end
   end, 1)
   broadcastToAll(color .. " takes " .. card.getName() .. " from the booster.", { 0.6, 0.85, 1 })
 end

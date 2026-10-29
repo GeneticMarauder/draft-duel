@@ -46,6 +46,7 @@ function Mock.newDeck(guid, count)
   d.shuffle = function() end
   d.getQuantity = function() return #d.cards end
   d.putObject = function(obj)
+    if d.locked then return nil end -- like TTS: a locked deck refuses new cards
     table.insert(d.cards, obj.guid)
     Mock.objects[obj.guid] = nil
   end

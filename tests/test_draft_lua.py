@@ -741,7 +741,8 @@ def test_booster_tutor_opens_15_cards_and_puts_the_choice_in_hand() -> None:
     g.Mock.flush()
     hand = {o.guid for o in _lua_list(g.Player.White.getHandObjects())}
     assert chosen.guid in hand and not chosen.locked and chosen.scale.x == 1
-    assert len(cube.cards) == before - 1, "the other 14 go back into the cube"
+    assert len(cube.cards) == before - 1, "the other 14 go back into the (locked) cube"
+    assert cube.locked, "the cube is locked again afterwards"
     assert _booster(g) == [] and any("takes" in m for m in _lua_list(g.Mock.messages))
 
     tutor.menu[1].fn("Red")  # a new booster can be opened afterwards
