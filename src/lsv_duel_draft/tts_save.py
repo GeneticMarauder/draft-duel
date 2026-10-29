@@ -188,16 +188,18 @@ def mat_pickers(mats: Sequence[dict[str, str]]) -> str:
     """
     if any(c in m["name"] for m in mats for c in '<>&"'):
         raise ValueError("playmat names must not need XML escaping (TTS shows entities literally)")
+    rows = (len(mats) + 1 + 3) // 4  # four thumbnails per row, plus "None"
+    height = 90 + rows * 122
     panels = []
     for color in ("White", "Red"):
         cells = [_mat_cell(color, 0, "None", None)]
         cells += [_mat_cell(color, i, m["name"], f"matthumb{i}") for i, m in enumerate(mats, 1)]
         panels.append(
             f'<Panel id="matPicker_{color}" visibility="{color}" active="false" rectAlignment="MiddleCenter" '
-            'width="1000" height="600" color="#101018F2">'
-            '<VerticalLayout padding="16 16 12 16" spacing="10">'
-            '<HorizontalLayout preferredHeight="36" spacing="10">'
-            '<Text fontSize="22" color="#FFFFFF" alignment="MiddleLeft">Choose your playmat</Text>'
+            f'width="1000" height="{height}" color="#101018F2">'
+            '<VerticalLayout padding="16 16 12 16" spacing="10" childForceExpandHeight="false">'
+            '<HorizontalLayout preferredHeight="36" spacing="10" childForceExpandWidth="false">'
+            '<Text fontSize="22" color="#FFFFFF" alignment="MiddleLeft" flexibleWidth="1">Choose your playmat</Text>'
             f'<Button id="matClose_{color}" preferredWidth="110" fontSize="16" onClick="onMatButton" '
             'textColor="#FFFFFF" colors="#37474F|#455A64|#263238|#555555">Close</Button>'
             '</HorizontalLayout>'

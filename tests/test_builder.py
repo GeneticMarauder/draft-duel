@@ -207,3 +207,24 @@ def test_playmats_reach_the_script_and_the_dropdowns() -> None:
                                       {"Type": 0, "Name": "matthumb2", "URL": "https://h/dt.jpg"}]
     import xml.etree.ElementTree as ET
     ET.fromstring(f"<root>{xml}</root>")  # well-formed
+
+
+def test_pictures_in_the_playmats_folder_become_mats(tmp_path: Path) -> None:
+    from lsv_duel_draft import playmats
+
+    folder = tmp_path / "playmats"
+    folder.mkdir()
+    picture = Image.new("RGB", (1600, 900), (180, 25, 26))  # a 16:9 red wallpaper...
+    picture.paste((0, 0, 0), (600, 300, 1000, 900))         # ...with a black figure
+    picture.save(folder / "Black_Clover.png")
+    (folder / "notes.txt").write_text("not a picture")
+
+    assert playmats.custom_mats(folder) == [("Black Clover", folder / "Black_Clover.png")]
+    mat = playmats.fit_image(folder / "Black_Clover.png")
+    assert mat.size == playmats.MAT_SIZE
+    r, g, b = mat.getpixel((5, 5))
+    assert abs(r - 180) < 6 and g < 40 and b < 40, "the sides are filled with the picture's edge colour"
+    assert mat.getpixel((playmats.W // 2, playmats.H - 5)) == (0, 0, 0), "the whole picture is shown, centred"
+
+    written = playmats.render_all(tmp_path / "out", folder)
+    assert [n for n, _, _ in written][-1] == "Black Clover" and len(written) == len(playmats.THEMES) + 1

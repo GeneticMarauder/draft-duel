@@ -12,7 +12,7 @@ import random
 from collections.abc import Callable
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageStat
 
 from lsv_duel_draft.sheets import save_hashed
 
@@ -323,15 +323,52 @@ def render(name: str) -> Image.Image:
 THUMB_SIZE = (440, 160)  # picture on the in-game playmat picker
 
 
-def render_all(out_dir: Path) -> list[tuple[str, str, str]]:
-    """Writes every playmat and a small thumbnail as content-hashed JPEGs.
+IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".webp")
 
-    Returns ``(name, mat filename, thumbnail filename)`` per theme, in ``THEMES`` order.
-    """
+
+def fit_image(path: Path) -> Image.Image:
+    """A picture of any shape on a mat: all of it shown, the leftover filled with its edge colour."""
+    with Image.open(path) as src:
+        img = src.convert("RGB")
+    scale = min(W / img.width, H / img.height)
+    img = img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
+    # Fill with the average colour of the edges that get padded (left/right for a narrow picture).
+    if img.width < W:
+        strips = [img.crop((0, 0, 4, img.height)), img.crop((img.width - 4, 0, img.width, img.height))]
+    else:
+        strips = [img.crop((0, 0, img.width, 4)), img.crop((0, img.height - 4, img.width, img.height))]
+    means = [ImageStat.Stat(strip).mean for strip in strips]
+    fill = tuple(round(sum(m[c] for m in means) / len(means)) for c in range(3))
+    mat = Image.new("RGB", MAT_SIZE, fill)
+    mat.paste(img, ((W - img.width) // 2, (H - img.height) // 2))
+    return mat
+
+
+def custom_mats(folder: Path | None) -> list[tuple[str, Path]]:
+    """Pictures dropped in ``folder`` become playmats, named after the file ("Black_Clover.png" -> "Black Clover")."""
+    if folder is None or not folder.is_dir():
+        return []
     out = []
-    for i, name in enumerate(THEMES):
-        img = render(name)
-        mat = save_hashed(img, out_dir, f"mat{i + 1:02d}")
-        thumb = save_hashed(img.resize(THUMB_SIZE, Image.LANCZOS), out_dir, f"matthumb{i + 1:02d}")
+    for path in sorted(folder.iterdir()):
+        if path.suffix.lower() in IMAGE_TYPES:
+            name = path.stem.replace("_", " ").replace("-", " ").strip()
+            if any(c in name for c in '<>&"'):
+                raise ValueError(f"rename {path.name}: playmat names cannot contain < > & or \"")
+            out.append((name, path))
+    return out
+
+
+def render_all(out_dir: Path, custom_dir: Path | None = None) -> list[tuple[str, str, str]]:
+    """Writes every playmat (themes, then pictures from ``custom_dir``) and a thumbnail as hashed JPEGs.
+
+    Returns ``(name, mat filename, thumbnail filename)`` in picker order.
+    """
+    images = [(name, lambda n=name: render(n)) for name in THEMES]
+    images += [(name, lambda p=path: fit_image(p)) for name, path in custom_mats(custom_dir)]
+    out = []
+    for i, (name, draw) in enumerate(images, 1):
+        img = draw()
+        mat = save_hashed(img, out_dir, f"mat{i:02d}")
+        thumb = save_hashed(img.resize(THUMB_SIZE, Image.LANCZOS), out_dir, f"matthumb{i:02d}")
         out.append((name, mat, thumb))
     return out

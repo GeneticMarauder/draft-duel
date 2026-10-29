@@ -62,8 +62,10 @@ CubeCobra cube (default `LSVCube`). Two halves:
   fronts, then backs of double-faced tokens).
 - `playmats.py` — `THEMES`: twelve playmats drawn procedurally with Pillow (seeded, so identical pixels
   and hashed names every build; no copyrighted art). `MAT_SIZE` 2048x744 matches the 44x16 in-game mat.
-  Saved to `sheets/mat??-<hash>.jpg`; names and URLs reach the script as `MATS_JSON`, and the names fill
-  each seat's dropdown via `<!--MAT_OPTIONS-->` in `ui.xml` (`global_xml`).
+  Pictures in the repo's `playmats/` folder are added after the themes (`fit_image`: whole picture,
+  centred, padded with its edge colour; name from the file name). Saved to `sheets/mat??-<hash>.jpg`
+  plus `matthumb??` thumbnails; names/URLs reach the script as `MATS_JSON`; thumbnails are save-level
+  `CustomUIAssets` (`matthumb<i>`) used by the pickers that `mat_pickers` writes into `<!--MAT_PICKERS-->`.
 - `cli.py` — orchestrates; writes `dist/LSV Cube Duel Draft.json`, copies into the TTS Saves
   folder when it exists, `--push` commits `sheets/` so raw.githubusercontent.com URLs resolve.
 - Card images are served from this public repo (`sheets/`). TTS cannot load Scryfall images directly.
@@ -114,13 +116,15 @@ CubeCobra cube (default `LSVCube`). Two halves:
   `gameNumber` increments and the deck editor reopens ("Sideboarding for game N");
   Ready to play starts the next game via the same `readyUp`/`startGame`. `owned`, `tutored` and
   `gameNumber` persist and follow DFC flips in `onObjectStateChange`.
-  **Playmats**: each seat's "Playmat" dropdown (bottom right, `visibility` = that seat) →
-  `onMatChosen` → `setPlaymat`: a `Custom_Tile` (spawnObject + `setCustomObject` in the same frame; raw
+  **Playmats**: each seat's "Playmat: <name>" button (bottom right, `visibility` = that seat) opens a
+  mid-screen picker of thumbnails (`onMatButton`); a thumbnail → `onMatPick` → `setPlaymat`
+  (TTS's Dropdown opened off-screen and can't be re-selected after a reload, hence the picker): a `Custom_Tile` (spawnObject + `setCustomObject` in the same frame; raw
   `spawnObjectData` tile data failed to load in TTS) at scale `MAT_SCALE` (a tile is 2 units deep at
   scale 1 and its width follows the image), locked and non-interactable, centred `MAT_Z` from the middle.
-  `mats` persists; `onLoad` re-locks them (interactable is not saved). Next game leaves them alone.
+  `mats` persists; `onLoad` re-locks them (interactable is not saved) and `updateMatButtons` relabels
+  the buttons. Next game leaves them alone.
 - `ui.xml` — status bar (hidden once the game starts), Start Draft button, Reset view, Next game,
-  per-seat playmat dropdowns, per-seat "your pick" prompts.
+  per-seat playmat buttons (pickers are generated), per-seat "your pick" prompts.
 
 **Privacy is per card, not hidden zones** (re-applied on every pickup/drop/state change via `rehide`, plus `!hide`). Pack cards use `setHiddenFrom(others)` (opponent sees
 backs); picks use `setInvisibleTo(others)`. Hidden zones were dropped: TTS draws them as solid

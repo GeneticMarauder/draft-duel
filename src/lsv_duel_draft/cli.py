@@ -40,6 +40,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SHEETS_DIR = ROOT / "sheets"
 CACHE_DIR = ROOT / ".cache" / "images"
 DIST_DIR = ROOT / "dist"
+PLAYMATS_DIR = ROOT / "playmats"  # drop pictures here to add them as playmats
 
 
 def _git(*args: str) -> str:
@@ -90,7 +91,7 @@ def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: st
     back_name = sh.save_hashed(sh.card_back(images[MAGIC_CARD_BACK]), SHEETS_DIR, "cardback")
     written.add(back_name)
     mats = []
-    for name, filename, thumb in playmats.render_all(SHEETS_DIR):
+    for name, filename, thumb in playmats.render_all(SHEETS_DIR, PLAYMATS_DIR):
         written.update((filename, thumb))
         mats.append({"name": name, "url": raw_url(slug, branch, filename), "thumb": raw_url(slug, branch, thumb)})
 
