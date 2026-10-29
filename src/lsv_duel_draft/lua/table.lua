@@ -207,6 +207,10 @@ function updateUI()
       UI.setValue("deckText_" .. color, "Deck " .. c.main .. "  (" .. (c.main - c.lands) .. " spells + "
         .. c.lands .. " lands)      Sideboard " .. c.side)
     end
+    for _, name in ipairs(BASIC_ORDER) do
+      local n = c and c.basics and c.basics[name] or 0
+      UI.setValue("land_" .. color .. "_" .. name, name .. "  " .. n)
+    end
   end
 end
 
@@ -391,9 +395,10 @@ end
 
 -- ---------------------------------------------------------------- deck editor
 -- After the draft each player's picks are laid out in columns by mana value
--- (0 .. 7+, then lands). Owner's left half = deck, right half = sideboard.
--- Dropping a card re-sorts that player's side. Bottomless bags of basic lands
--- sit along the player's edge; a basic dropped in the sideboard is removed.
+-- (0 .. 7+, then lands). The deck sits in the middle of the table; the
+-- sideboard is a smaller area to the owner's right. Dropping a card re-sorts
+-- that player's side. Basic lands are added and removed with the land buttons
+-- in the bottom panel; a basic dropped in the sideboard is removed.
 
 DECK_SCALE = 0.8
 DECK_COLS = 9          -- mana value 0..7+, then a lands column
@@ -401,10 +406,13 @@ DECK_COL_STEP = 1.95
 DECK_CASCADE = 0.55    -- how much of each card shows above the next one
 DECK_LAYER = 0.06      -- height step between cascaded cards (more than a card is thick)
 DECK_TOP_Z = 3.6       -- first card's centre, measured from the middle line
-MAIN_U0 = -19.6        -- deck column 0, in owner-relative x (negative = owner's left)
-SIDE_U0 = 4.0          -- sideboard column 0
-BAG_Z = 19
-BAG_U = { -8, -4, 0, 4, 8 }
+SIDE_SPLIT_U = 9.4     -- owner-relative x: left of this is the deck, right is the sideboard
+-- Per-area column layout, in owner-relative x (negative = owner's left).
+AREAS = {
+  main = { u0 = -(DECK_COLS - 1) * DECK_COL_STEP / 2, step = DECK_COL_STEP, scale = DECK_SCALE, cascade = DECK_CASCADE },
+  side = { u0 = 10.8, step = 1.55, scale = 0.65, cascade = 0.45 },
+}
+BASIC_ORDER = { "Plains", "Island", "Swamp", "Mountain", "Forest" }
 BUILD_CAMERA_DISTANCE = 38
 
 function cardInfo(obj)
@@ -413,13 +421,18 @@ function cardInfo(obj)
   return {}
 end
 
--- A drafted card or basic land (not the cube deck, discard pile or bags).
+-- A drafted card or basic land (not the cube deck or discard pile).
 function isDeckCard(obj)
   return obj ~= nil and obj.type == "Card" and cardInfo(obj).id ~= nil
 end
 
 local function ownerU(color, x) return x * -sideSign(color) end
 local function worldX(color, u) return u * -sideSign(color) end
+
+local function areaOf(color, obj)
+  if ownerU(color, obj.getPosition().x) < SIDE_SPLIT_U then return "main" end
+  return "side"
+end
 
 -- Re-sorts everything on a player's side into deck and sideboard columns.
 -- forceMain puts every card in the deck (used when the draft ends).
@@ -430,12 +443,12 @@ function layoutDeck(color, forceMain)
   for _, area in ipairs({ "main", "side" }) do
     for c = 0, DECK_COLS - 1 do cols[area][c] = {} end
   end
-  local counts = { main = 0, side = 0, lands = 0 }
+  local counts = { main = 0, side = 0, lands = 0, basics = {} }
   for _, o in ipairs(getObjects()) do
     if isDeckCard(o) and o.getPosition().z * sign > 1 then
       local info = cardInfo(o)
       local area = "side"
-      if forceMain or ownerU(color, o.getPosition().x) < 0 then area = "main" end
+      if forceMain or areaOf(color, o) == "main" then area = "main" end
       if info.basic and area == "side" then
         o.destruct()
       else
@@ -444,15 +457,17 @@ function layoutDeck(color, forceMain)
         table.insert(cols[area][col], o)
         counts[area] = counts[area] + 1
         if area == "main" and info.land then counts.lands = counts.lands + 1 end
+        if area == "main" and info.basic then
+          counts.basics[o.getName()] = (counts.basics[o.getName()] or 0) + 1
+        end
       end
     end
   end
   for area, byCol in pairs(cols) do
-    local u0 = SIDE_U0
-    if area == "main" then u0 = MAIN_U0 end
+    local a = AREAS[area]
     for c = 0, DECK_COLS - 1 do
       local list = byCol[c]
-      table.sort(list, function(a, b) return a.getName() < b.getName() end)
+      table.sort(list, function(x, y) return x.getName() < y.getName() end)
       for k, o in ipairs(list) do
         o.setInvisibleTo(othersThan(color))
         o.setHiddenFrom({})
@@ -464,12 +479,12 @@ function layoutDeck(color, forceMain)
         o.use_gravity = false
         -- Not sticky: lifting a card must not carry the cards cascaded on top of it.
         o.sticky = false
-        o.setScale({ x = DECK_SCALE, y = 1, z = DECK_SCALE })
+        o.setScale({ x = a.scale, y = 1, z = a.scale })
         o.setRotation({ x = 0, y = seatYaw(color), z = 0 })
         o.setPosition({
-          x = worldX(color, u0 + c * DECK_COL_STEP),
+          x = worldX(color, a.u0 + c * a.step),
           y = L.feltY + 0.1 + k * DECK_LAYER,
-          z = sign * (DECK_TOP_Z + (k - 1) * DECK_CASCADE),
+          z = sign * (DECK_TOP_Z + (k - 1) * a.cascade),
         })
         o.setVelocity({ x = 0, y = 0, z = 0 })
         o.setAngularVelocity({ x = 0, y = 0, z = 0 })
@@ -480,28 +495,46 @@ function layoutDeck(color, forceMain)
   updateUI()
 end
 
--- Bottomless bags of each basic land along the player's edge (spawned once).
-function spawnBasicBags(color)
-  local marker = "basic-bag:" .. color
-  for _, o in ipairs(getObjects()) do
-    if o.getGMNotes() == marker then return end
+local function basicLandData(name)
+  for _, land in ipairs(BASIC_LANDS) do
+    if land.Nickname == name then return land end
   end
+  return nil
+end
+
+-- Adds one basic land straight into the player's Lands column.
+function addBasic(color, name)
+  local land = basicLandData(name)
+  if land == nil or not building or ready[color] or L == nil then return end
+  local a = AREAS.main
+  spawnObjectData({
+    data = land,
+    position = { x = worldX(color, a.u0 + (DECK_COLS - 1) * a.step), y = L.feltY + 2,
+                 z = sideSign(color) * DECK_TOP_Z },
+    rotation = { x = 0, y = seatYaw(color), z = 0 },
+    callback_function = function() layoutDeck(color, false) end,
+  })
+end
+
+-- Removes one basic land of that name from the player's deck.
+function removeBasic(color, name)
+  if not building or ready[color] then return end
   local sign = sideSign(color)
-  for i, land in ipairs(BASIC_LANDS) do
-    spawnObjectData({
-      data = {
-        Name = "Infinite_Bag",
-        Nickname = land.Nickname,
-        Description = "Drag a " .. land.Nickname .. " onto your deck.",
-        GMNotes = marker,
-        Transform = { posX = 0, posY = 0, posZ = 0, rotX = 0, rotY = 0, rotZ = 0,
-                      scaleX = 0.7, scaleY = 0.7, scaleZ = 0.7 },
-        ContainedObjects = { land },
-      },
-      position = { x = worldX(color, BAG_U[i] or (i * 4 - 12)), y = L.feltY + 1, z = sign * BAG_Z },
-      rotation = { x = 0, y = seatYaw(color), z = 0 },
-    })
+  for _, o in ipairs(getObjects()) do
+    if isDeckCard(o) and cardInfo(o).basic and o.getName() == name
+        and o.getPosition().z * sign > 1 and areaOf(color, o) == "main" then
+      o.destruct()
+      Wait.frames(function() layoutDeck(color, false) end, 1)
+      return
+    end
   end
+end
+
+-- Land buttons in the bottom panel: left-click adds one, right-click removes one.
+function onLandClicked(player, mouseButton, id)
+  local color, name = id:match("^land_(%a+)_(%a+)$")
+  if color == nil or player.color ~= color then return end
+  if mouseButton == "-2" then removeBasic(color, name) else addBasic(color, name) end
 end
 
 -- forceMain: true when the draft has just ended (every pick starts in the
@@ -509,7 +542,6 @@ end
 function startDeckBuilding(forceMain)
   building = true
   for _, color in ipairs(COLORS) do
-    spawnBasicBags(color)
     layoutDeck(color, forceMain)
     frameCamera(color)
   end
@@ -531,7 +563,7 @@ function sideCards(color)
   local main, side = {}, {}
   for _, o in ipairs(getObjects()) do
     if isDeckCard(o) and o.getPosition().z * sign > 1 then
-      if ownerU(color, o.getPosition().x) < 0 then table.insert(main, o) else table.insert(side, o) end
+      if areaOf(color, o) == "main" then table.insert(main, o) else table.insert(side, o) end
     end
   end
   return main, side

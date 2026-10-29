@@ -68,9 +68,11 @@ CubeCobra cube (default `LSVCube`). Two halves:
   Start Draft. State persists via `onSave`/`onLoad` (buttons, menus and visibility are reapplied).
   Chat commands: `!draftdebug` (geometry dump), `!draftauto [n]` (random picks for testing).
   **Deck editor** (after pick 96, and on reload of a finished draft): every card on a player's half
-  is sorted into columns by mana value (0..7+, then lands), cascaded so names show. Owner's left
-  half = deck, right half = sideboard; `onObjectDrop` re-sorts. Bottomless bags of the cube's basic
-  lands sit at the player's edge; a basic dropped in the sideboard is destroyed.
+  is sorted into columns by mana value (0..7+, then lands), cascaded so names show, gravity off and
+  non-sticky so cards stay flat and lift one at a time. The deck is centred on the table; owner-x
+  beyond `SIDE_SPLIT_U` is the smaller sideboard (`AREAS`). `onObjectDrop` re-sorts. Basic lands come
+  from the land buttons in the bottom panel (`onLandClicked`: left adds, right removes); a basic
+  dropped in the sideboard is destroyed.
   `tryObjectEnterContainer` stops cards merging into piles. Card GMNotes carry
   `{"id","cmc","land","basic"}`; basic-land card data comes from the `BASIC_LANDS_JSON` script header.
   **Ready to play**: `readyUp` (min 40 cards; bot seats ready automatically) groups the deck into a

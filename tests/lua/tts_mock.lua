@@ -182,6 +182,7 @@ spawnObjectData = function(params)
   o.name = params.data.Nickname or o.guid
   o.data = params.data
   o.setPosition(params.position)
+  if params.callback_function then params.callback_function(o) end
   return o
 end
 -- A player pulling a card out of a bottomless bag and dropping it at pos.

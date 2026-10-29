@@ -361,7 +361,9 @@ def test_deck_editor_sorts_picks_into_mana_value_columns() -> None:
     lua = make_lua(with_table=True)
     g = _finished_vs_bot(lua)
     white = [o for o in _deck_cards(g) if o.pos.z < 0]
-    assert all(_owner_u(o) < 0 for o in white), "every pick starts in the deck (left)"
+    assert all(_owner_u(o) < g.SIDE_SPLIT_U for o in white), "every pick starts in the deck"
+    xs = [o.pos.x for o in white]
+    assert abs(min(xs) + max(xs)) < 0.01, "the deck's columns are centred on the middle of the table"
     by_x: dict[float, list] = {}
     for o in white:
         by_x.setdefault(round(o.pos.x, 2), []).append(o)
@@ -380,10 +382,10 @@ def test_dragging_to_the_sideboard_and_back_updates_counts() -> None:
     lua = make_lua(with_table=True)
     g = _finished_vs_bot(lua)
     card = next(o for o in _deck_cards(g) if o.pos.z < 0)
-    card.setPosition(lua.table(x=10, y=2, z=-6))  # White drops it on their right: sideboard
+    card.setPosition(lua.table(x=12, y=2, z=-6))  # White drops it on their right: sideboard
     g.onObjectDrop("White", card)
     g.Mock.flush()
-    assert card.pos.x > 0 and card.pos.z < 0
+    assert card.pos.x > g.SIDE_SPLIT_U and card.pos.z < 0 and card.scale.x == g.AREAS.side.scale
     assert g.Mock.ui["deckText_White"].startswith("Deck 47 ") and g.Mock.ui["deckText_White"].endswith("Sideboard 1")
     card.setPosition(lua.table(x=-10, y=2, z=-6))  # and back into the deck
     g.onObjectDrop("White", card)
@@ -391,26 +393,47 @@ def test_dragging_to_the_sideboard_and_back_updates_counts() -> None:
     assert g.Mock.ui["deckText_White"].startswith("Deck 48 ") and g.Mock.ui["deckText_White"].endswith("Sideboard 0")
 
 
-def test_basic_land_bags_add_and_remove_lands() -> None:
+def _lands(g, color: str = "White") -> int:
+    return int(g.Mock.ui[f"deckText_{color}"].split("+ ")[1].split(" lands")[0])
+
+
+def test_land_buttons_add_and_remove_basics() -> None:
     lua = make_lua(with_table=True)
     g = _finished_vs_bot(lua)
-    bags = [o for o in g.Mock.objects.values() if o.kind == "Infinite_Bag"]
-    white_bags = [b for b in bags if b.notes == "basic-bag:White"]
-    assert len(bags) == 10 and len(white_bags) == 5 and all(b.pos.z < 0 for b in white_bags)
-    lands_before = int(g.Mock.ui["deckText_White"].split("+ ")[1].split(" lands")[0])
+    assert not [o for o in g.Mock.objects.values() if o.kind == "Infinite_Bag"], "no land bags on the table"
+    lands_before = _lands(g)
+    assert g.Mock.ui["land_White_Plains"] == "Plains  0"
 
-    plains = g.Mock.takeFromBag(white_bags[0], lua.table(x=-5, y=2, z=-8))
-    g.onObjectDrop("White", plains)
+    for _ in range(3):
+        g.onLandClicked(g.Player.White, "-1", "land_White_Plains")  # left click adds
     g.Mock.flush()
-    assert g.Mock.ui["deckText_White"].startswith("Deck 49 ")
-    assert f"+ {lands_before + 1} lands" in g.Mock.ui["deckText_White"]
-    assert "Red" in set(_lua_list(plains.invisibleTo))
+    assert g.Mock.ui["deckText_White"].startswith("Deck 51 ") and _lands(g) == lands_before + 3
+    assert g.Mock.ui["land_White_Plains"] == "Plains  3"
+    plains = [o for o in g.Mock.objects.values() if o.kind == "Card" and o.name == "Plains"]
+    assert len(plains) == 3 and all(o.pos.z < 0 and "Red" in set(_lua_list(o.invisibleTo)) for o in plains)
+    land_col_x = max(o.pos.x for o in _deck_cards(g) if o.pos.z < 0 and o.pos.x < g.SIDE_SPLIT_U)
+    assert all(o.pos.x == land_col_x for o in plains), "added to the Lands column"
 
-    plains.setPosition(lua.table(x=10, y=2, z=-8))  # a basic dropped on the sideboard is removed
-    g.onObjectDrop("White", plains)
+    g.onLandClicked(g.Player.White, "-2", "land_White_Plains")  # right click removes
     g.Mock.flush()
-    assert g.Mock.objects[plains.guid] is None
-    assert g.Mock.ui["deckText_White"].startswith("Deck 48 ") and g.Mock.ui["deckText_White"].endswith("Sideboard 0")
+    assert g.Mock.ui["land_White_Plains"] == "Plains  2" and g.Mock.ui["deckText_White"].startswith("Deck 50 ")
+
+    g.onLandClicked(g.Player.Red, "-1", "land_White_Plains")  # someone else's button does nothing
+    g.Mock.flush()
+    assert g.Mock.ui["land_White_Plains"] == "Plains  2"
+
+
+def test_a_basic_dragged_to_the_sideboard_is_removed() -> None:
+    lua = make_lua(with_table=True)
+    g = _finished_vs_bot(lua)
+    g.onLandClicked(g.Player.White, "-1", "land_White_Island")
+    g.Mock.flush()
+    island = next(o for o in g.Mock.objects.values() if o.kind == "Card" and o.name == "Island")
+    island.setPosition(lua.table(x=15, y=2, z=-8))
+    g.onObjectDrop("White", island)
+    g.Mock.flush()
+    assert g.Mock.objects[island.guid] is None
+    assert g.Mock.ui["land_White_Island"] == "Island  0" and g.Mock.ui["deckText_White"].endswith("Sideboard 0")
 
 
 def test_cards_do_not_merge_into_piles_while_deck_building() -> None:
@@ -427,7 +450,7 @@ def test_deck_editor_resumes_after_reload() -> None:
     g.onLoad(saved)
     g.Mock.flush()
     assert g.Mock.ui["statusText"].startswith("Deck building")
-    assert len([o for o in g.Mock.objects.values() if o.kind == "Infinite_Bag"]) == 10, "bags are not duplicated"
+    assert g.Mock.ui["deckText_White"].startswith("Deck 48 ")
 
 
 def test_deck_editor_cards_float_flat_in_cascade_order() -> None:
@@ -451,7 +474,7 @@ def test_deck_editor_cards_float_flat_in_cascade_order() -> None:
 
 def _move_to_sideboard(lua: LuaRuntime, g, cards: list) -> None:
     for c in cards:
-        c.setPosition(lua.table(x=10, y=2, z=-6))
+        c.setPosition(lua.table(x=12, y=2, z=-6))
         g.onObjectDrop("White", c)
     g.Mock.flush()
 
