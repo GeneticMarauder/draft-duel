@@ -43,7 +43,7 @@ Only add the LLM extra (`agent-core[llm]`) if this project calls an LLM at runti
 
 ## Architecture
 
-Builds a Tabletop Simulator (TTS) save for a 1v1 pick-from-4 draft of a
+Builds a Tabletop Simulator (TTS) save for a 1v1 pick-from-5 draft of a
 CubeCobra cube (default `LSVCube`). Two halves:
 
 **Python builder** (`uv run lsv-duel-draft [--cube ID] [--push]`)
@@ -54,16 +54,21 @@ CubeCobra cube (default `LSVCube`). Two halves:
   409x570 per card so sheets stay ≤4096 px; content-hashed filenames to defeat TTS's URL cache.
 - `tts_save.py` — save JSON: `Table_RPG`, hand zones + hidden zones (fixed GUIDs), the cube deck
   (`c00001`; DFC backs as card state 2 on sheets ≥ 51), Global Lua + XML UI.
+- `tokens.py` — tokens from the curated `data/tokens.csv` (one row per token; "Made by" lists cube
+  card names separated by `;`, DFCs as "Front // Back"). `match_makers` links them to cube cards by
+  name → card id; the build prints maker names no longer in the cube. Token images are downloaded
+  through our client like card images and rendered on their own sheets (`TOKEN_SHEET_BASE` 41+:
+  fronts, then backs of double-faced tokens).
 - `cli.py` — orchestrates; writes `dist/LSV Cube Duel Draft.json`, copies into the TTS Saves
   folder when it exists, `--push` commits `sheets/` so raw.githubusercontent.com URLs resolve.
 - Card images are served from this public repo (`sheets/`). TTS cannot load Scryfall images directly.
 
 **Lua (in-game Global script)** — `src/lsv_duel_draft/lua/`
 - `draft_core.lua` — pure rules engine (no TTS API). Per pack, starter S / other O:
-  S picks, O picks, O picks, S picks — each from 4 cards (topped up from the cube), then the
-  3 leftovers are discarded face-up. Starter alternates; 24 packs → 48 picks each.
+  S picks, O picks, O picks, S picks — each from 5 cards (`PACK_SIZE`, topped up from the cube), then
+  the 4 leftovers are discarded face-up. Starter alternates; 24 packs → 48 picks each (192 cards dealt).
 - `table.lua` — TTS adapter. Per side, from the middle out: cube + discard strip, the pack row
-  (current pack: 4 cards at 1.5x, side by side, locked, with an on-card **Draft** button and a
+  (current pack: 5 cards at 1.5x, side by side, locked, with an on-card **Draft** button and a
   right-click "Draft this card"), then the 12x4 pick grid (0.65x). Bots draft for seats empty at
   Start Draft. State persists via `onSave`/`onLoad` (buttons, menus and visibility are reapplied).
   Chat commands: `!draftdebug` (geometry dump), `!draftauto [n]` (random picks for testing).
@@ -74,11 +79,17 @@ CubeCobra cube (default `LSVCube`). Two halves:
   from the land buttons in the bottom panel (`onLandClicked`: left adds, right removes); a basic
   dropped in the sideboard is destroyed.
   `tryObjectEnterContainer` stops cards merging into piles. Card GMNotes carry
-  `{"id","cmc","land","basic"}`; basic-land card data comes from the `BASIC_LANDS_JSON` script header.
+  `{"id","cmc","land","basic"}`; basic-land card data comes from the `BASIC_LANDS_JSON` script header, token data from `TOKENS_JSON`.
   **Ready to play**: `readyUp` (min 40 cards; bot seats ready automatically) groups the deck into a
   face-down library and the sideboard into a pile invisible to the opponent; when every seat is
   ready, `startGame` removes the land bags, moves the cube and discard pile to the table edges,
   shuffles, deals 7 to each hand and spawns 20-life counters. `ready`, `piles`, `playing` persist.
+  **Tokens** (only while `playing`): a card whose GMNotes id is in `TOKENS_JSON.makers` gets a
+  right-click "Create <token>" per token; the token spawns beside the card, fanning to the owner's
+  right (a card in hand → `TOKEN_HOME_*` on the clicker's side). `UNIQUE_TOKENS` (The Monarch,
+  Day // Night) move instead of duplicating. Menus are lost when a card enters a deck or on reload, so
+  they are re-added on `onObjectSpawn` / `onObjectLeaveContainer` / state change / `onLoad`. Token
+  GMNotes are `{"token": label}` (no `id`, so the deck editor ignores them).
 - `ui.xml` — status bar (hidden once the game starts), Start Draft button, Reset view, per-seat "your pick" prompts.
 
 **Privacy is per card, not hidden zones** (re-applied on every pickup/drop/state change via `rehide`, plus `!hide`). Pack cards use `setHiddenFrom(others)` (opponent sees

@@ -26,6 +26,21 @@ class Card:
 
 
 @dataclass(frozen=True)
+class Token:
+    """A token (or emblem / marker card) and the names of the cube cards that make it.
+
+    ``label`` is unique per token ("Cat 1/1 White") and is what players see in
+    the right-click menu. ``back_url`` is set only for double-faced tokens.
+    """
+
+    label: str
+    text: str
+    front_url: str
+    back_url: str | None = None
+    makers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SheetSlot:
     """Where one face lives on a Tabletop Simulator deck sheet."""
 

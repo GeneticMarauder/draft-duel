@@ -38,8 +38,17 @@ def make_lua(with_table: bool = False) -> LuaRuntime:
              "GMNotes": json.dumps({"id": n, "cmc": 0, "land": True, "basic": True})}
             for n in ("Plains", "Island", "Swamp", "Mountain", "Forest")
         ])
+        g.TOKENS_JSON = json.dumps(TOKENS)
         lua.execute((LUA_DIR / "table.lua").read_text(encoding="utf-8"))
     return lua
+
+
+# Two token-making cards: "maker1" makes Treasure and Goblin Shaman, "maker2" the Monarch.
+TOKENS = {
+    "tokens": {label: {"Name": "Card", "Nickname": label, "GMNotes": json.dumps({"token": label})}
+               for label in ("Treasure", "Goblin Shaman 2/2 Red", "The Monarch")},
+    "makers": {"maker1": ["Treasure", "Goblin Shaman 2/2 Red"], "maker2": ["The Monarch"]},
+}
 
 
 # ------------------------------------------------------------------ rules engine
@@ -86,7 +95,7 @@ def test_full_draft_follows_pick_order_and_counts() -> None:
     while not core.finished:
         picker = core.picker(core)
         pack = list(_to_py(core.pack))
-        assert len(pack) == 4, "every pick is made from 4 cards"
+        assert len(pack) == 5, "every pick is made from 5 cards"
         order.append(picker)
         actions, err = pick(core, picker, pack[0])
         assert err is None
@@ -94,8 +103,8 @@ def test_full_draft_follows_pick_order_and_counts() -> None:
 
     assert core.pickCount(core, "White") == 48
     assert core.pickCount(core, "Red") == 48
-    assert table.dealt == 24 * 7 == 168
-    assert len(_to_py(core.discards)) == 24 * 3
+    assert table.dealt == 24 * 8 == 192
+    assert len(_to_py(core.discards)) == 24 * 4
     # Pack 1 starts with White (W R R W), pack 2 with Red (R W W R), and so on.
     assert order[:8] == ["White", "Red", "Red", "White", "Red", "White", "White", "Red"]
     assert len(order) == 96
@@ -144,7 +153,7 @@ def _play(lua: LuaRuntime, picks: int) -> None:
     for _ in range(picks):
         holder = g.Mock.packHolder()
         cards = _lua_list(g.Mock.packCards(holder))
-        assert len(cards) == 4, f"{holder} should hold a 4-card pack"
+        assert len(cards) == 5, f"{holder} should hold a 5-card pack"
         g.onDraftButton(cards[0], holder)  # the on-card Draft button
         g.Mock.flush()
 
@@ -186,7 +195,7 @@ def test_table_adapter_runs_a_whole_draft() -> None:
 
     _play(lua, 96)
     assert g.Mock.ui["statusText"].startswith("Deck building")
-    assert len(g.Mock.objects["c00001"].cards) == 515 - 168
+    assert len(g.Mock.objects["c00001"].cards) == 515 - 192
 
     # When the draft ends, all 48 picks go into the deck columns (deck editor).
     picks = _deck_cards(g)
@@ -233,12 +242,12 @@ def test_pack_is_laid_out_on_the_table_for_its_holder_only() -> None:
     holder = g.Mock.packHolder()
     other = "Red" if holder == "White" else "White"
     pack = _lua_list(g.Mock.packCards(holder))
-    assert len(pack) == 4
+    assert len(pack) == 5
     # Side by side on the holder's pack row, face-up, enlarged, not overlapping.
     xs = sorted(c.pos.x for c in pack)
     card_w = 2.2 * g.PACK_SCALE
     assert all(b - a > card_w for a, b in itertools.pairwise(xs)), "pack cards overlap"
-    assert abs(sum(xs) / 4) < 0.01, "pack row is centred"
+    assert abs(sum(xs) / 5) < 0.01, "pack row is centred"
     assert all(abs(abs(c.pos.z) - g.PACK_ROW_Z) < 0.01 and c.rot.z == 0 and c.locked for c in pack)
     # The opponent sees only card backs; the holder sees the faces.
     for c in pack:
@@ -275,7 +284,7 @@ def _human_picks(lua: LuaRuntime, n: int) -> None:
     for _ in range(n):
         assert g.Mock.packHolder() == "White", "between human picks the pack is always back with White"
         cards = _lua_list(g.Mock.packCards("White"))
-        assert len(cards) == 4
+        assert len(cards) == 5
         cards[0].menu[1].fn("White")  # right-click > Draft this card
         g.Mock.flush()
 
@@ -362,8 +371,10 @@ def test_deck_editor_sorts_picks_into_mana_value_columns() -> None:
     g = _finished_vs_bot(lua)
     white = [o for o in _deck_cards(g) if o.pos.z < 0]
     assert all(_owner_u(o) < g.SIDE_SPLIT_U for o in white), "every pick starts in the deck"
-    xs = [o.pos.x for o in white]
-    assert abs(min(xs) + max(xs)) < 0.01, "the deck's columns are centred on the middle of the table"
+    # Random bot picks can leave a mana value empty, so check the grid, not the cards' extent.
+    grid = [g.AREAS.main.u0 + c * g.AREAS.main.step for c in range(g.DECK_COLS)]
+    assert abs(grid[0] + grid[-1]) < 0.01, "the deck's columns are centred on the middle of the table"
+    assert all(any(abs(o.pos.x - x) < 0.01 for x in grid) for o in white), "every card sits in a column"
     by_x: dict[float, list] = {}
     for o in white:
         by_x.setdefault(round(o.pos.x, 2), []).append(o)
@@ -606,3 +617,87 @@ def test_hide_command_rehides_everything() -> None:
         o.invisibleTo = None
     assert g.onChat("!hide", g.Player.White) is False
     assert all(_hidden_from_red(o) for o in white)
+
+
+# ------------------------------------------------------------------ tokens
+
+
+def _maker(lua: LuaRuntime, guid: str, card_id: str, x: float, z: float):
+    """A card that makes tokens appearing on the table (drawn, dealt or played)."""
+    g = lua.globals()
+    card = g.Mock.newObject(guid, "Card")
+    card.notes = json.dumps({"id": card_id, "cmc": 2, "land": False, "basic": False})
+    card.pos = lua.table(x=x, y=1.2, z=z)
+    g.onObjectSpawn(card)
+    g.Mock.flush()
+    return card
+
+
+def _tokens(g, label: str) -> list:
+    return [o for o in g.Mock.objects.values() if o.kind == "Card" and json.loads(o.notes or "{}").get("token") == label]
+
+
+def _in_game(lua: LuaRuntime):
+    g = _finished_vs_bot(lua)
+    g.onReadyClicked(g.Player.White)
+    g.Mock.flush()
+    return g
+
+
+def test_right_click_creates_the_cards_tokens_beside_it() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    card = _maker(lua, "m00001", "maker1", x=0, z=-6)
+    labels = [item.label for item in _lua_list(card.menu)]
+    assert labels == ["Create Treasure", "Create Goblin Shaman 2/2 Red"]
+
+    for _ in range(3):
+        card.menu[1].fn("White")
+    g.Mock.flush()
+    treasures = _tokens(g, "Treasure")
+    assert len(treasures) == 3 and all(t.name == "Treasure" for t in treasures)
+    xs = sorted(t.pos.x for t in treasures)
+    assert xs[0] > card.pos.x, "tokens land on White's right of the card"
+    assert all(b - a >= 2.2 for a, b in itertools.pairwise(xs)), "tokens fan out instead of stacking"
+    assert all(abs(t.pos.z - card.pos.z) < 0.01 and t.rot.z == 0 for t in treasures)
+
+    plain = _maker(lua, "m00002", "not-a-maker", x=4, z=-6)
+    assert len(_lua_list(plain.menu)) == 0, "cards that make no tokens get no menu"
+
+
+def test_tokens_from_a_card_in_hand_land_on_your_side() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    card = _maker(lua, "m00003", "maker1", x=0, z=19)  # in Red's hand
+    card.menu[2].fn("Red")
+    g.Mock.flush()
+    (shaman,) = _tokens(g, "Goblin Shaman 2/2 Red")
+    assert 1 < shaman.pos.z < 15, "on Red's battlefield, not in the hand"
+
+
+def test_the_monarch_moves_instead_of_duplicating() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    white_card = _maker(lua, "m00004", "maker2", x=0, z=-6)
+    red_card = _maker(lua, "m00005", "maker2", x=0, z=6)
+    white_card.menu[1].fn("White")
+    red_card.menu[1].fn("Red")
+    g.Mock.flush()
+    (monarch,) = _tokens(g, "The Monarch")
+    assert monarch.pos.z > 0, "the Monarch moved to Red"
+
+
+def test_no_token_menus_before_the_game_and_they_return_after_reload() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    _start_vs_bot(lua)
+    early = _maker(lua, "m00006", "maker1", x=0, z=-6)
+    assert len(_lua_list(early.menu)) == 0, "draft and deck-building menus are left alone"
+
+    g = _in_game(make_lua(with_table=True))
+    card = g.Mock.newObject("m00007", "Card")  # a reload drops every context menu
+    card.notes = json.dumps({"id": "maker2", "cmc": 3, "land": False, "basic": False})
+    saved = g.onSave()
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert [item.label for item in _lua_list(card.menu)] == ["Create The Monarch"]

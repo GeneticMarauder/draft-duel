@@ -15,7 +15,7 @@ import subprocess
 from pathlib import Path
 
 from lsv_duel_draft import sheets as sh
-from lsv_duel_draft.models import Card, Sheet
+from lsv_duel_draft.models import Card, Sheet, Token
 from lsv_duel_draft.sources import (
     MAGIC_CARD_BACK,
     download_image,
@@ -23,10 +23,12 @@ from lsv_duel_draft.sources import (
     fetch_cube_ids,
     make_client,
 )
+from lsv_duel_draft.tokens import load_tokens, match_makers, token_faces
 from lsv_duel_draft.tts_save import (
     BACK_SHEET_BASE,
     FRONT_SHEET_BASE,
     SAVE_NAME,
+    TOKEN_SHEET_BASE,
     build_save,
 )
 
@@ -62,8 +64,9 @@ def tts_saves_dirs() -> list[Path]:
             if (d / "My Games" / "Tabletop Simulator").is_dir()]
 
 
-def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: str) -> tuple[dict[int, Sheet], str]:
-    """Render front sheets, back-face sheets and the card back; return sheets by id and the back URL."""
+def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: str,
+               tokens: list[Token] | None = None) -> tuple[dict[int, Sheet], str]:
+    """Render front, back-face and token sheets and the card back; return sheets by id and the back URL."""
     SHEETS_DIR.mkdir(exist_ok=True)
     sheets: dict[int, Sheet] = {}
     written: set[str] = set()
@@ -77,6 +80,8 @@ def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: st
         add(FRONT_SHEET_BASE + i, group, f"front{i + 1:02d}")
     for i, group in enumerate(sh.chunk([c.back.image_url for c in cards if c.back])):
         add(BACK_SHEET_BASE + i, group, f"back{i + 1:02d}")
+    for i, group in enumerate(sh.chunk(token_faces(tokens or []))):
+        add(TOKEN_SHEET_BASE + i, group, f"tokens{i + 1:02d}")
 
     back_name = sh.save_hashed(sh.card_back(images[MAGIC_CARD_BACK]), SHEETS_DIR, "cardback")
     written.add(back_name)
@@ -113,8 +118,13 @@ def main(argv: list[str] | None = None) -> None:
         cards = fetch_cards(client, ids)
         basics = fetch_cards(client, basic_ids)
         everything = cards + basics
+        tokens, makers, missing = match_makers(load_tokens(), cards)
+        print(f"Tokens: {len(tokens)} made by {len(makers)} cube cards")
+        if missing:
+            print(f"  not in the cube (check data/tokens.csv): {', '.join(missing)}")
         urls = list(dict.fromkeys([c.front.image_url for c in everything]
-                                  + [c.back.image_url for c in everything if c.back] + [MAGIC_CARD_BACK]))
+                                  + [c.back.image_url for c in everything if c.back]
+                                  + token_faces(tokens) + [MAGIC_CARD_BACK]))
         images: dict[str, Path] = {}
         for n, url in enumerate(urls, 1):
             images[url] = download_image(client, url, CACHE_DIR)
@@ -122,11 +132,11 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  images {n}/{len(urls)}")
 
     # Basics go on the front sheets after the cube's cards (see tts_save.build_save).
-    sheets, back_url = render_all(everything, images, slug, args.branch)
+    sheets, back_url = render_all(everything, images, slug, args.branch, tokens)
     dfc = sum(1 for c in cards if c.back)
     print(f"Rendered {len(sheets)} sheets ({dfc} double-faced cards).")
 
-    save = build_save(cards, sheets, back_url, args.cube, basics)
+    save = build_save(cards, sheets, back_url, args.cube, basics, tokens, makers)
     DIST_DIR.mkdir(exist_ok=True)
     out = DIST_DIR / f"{SAVE_NAME}.json"
     out.write_text(json.dumps(save, indent=1, ensure_ascii=False), encoding="utf-8")

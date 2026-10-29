@@ -102,3 +102,56 @@ def test_cards_carry_deck_editor_data_and_basics_reach_the_script() -> None:
     assert [b["Nickname"] for b in lands] == ["Plains"]
     assert json.loads(lands[0]["GMNotes"])["basic"] is True
     assert lands[0]["CardID"] == fronts[2].card_id, "basics sit on the sheets after the cube's cards"
+
+
+# ------------------------------------------------------------------ tokens
+
+
+def test_bundled_token_list_parses() -> None:
+    from lsv_duel_draft.tokens import load_tokens
+
+    tokens = load_tokens()
+    by_label = {t.label: t for t in tokens}
+    assert len(by_label) == len(tokens) >= 50, "labels are unique"
+    treasure = by_label["Treasure"]
+    assert treasure.text.startswith("Token Artifact") and "Ragavan, Nimble Pilferer" in treasure.makers
+    assert "Minsc & Boo, Timeless Heroes" in by_label["Boo 1/1"].makers, "commas inside names survive"
+    assert by_label["Day // Night"].back_url and not treasure.back_url
+
+
+def test_makers_match_cube_cards_by_any_face_name() -> None:
+    from lsv_duel_draft.models import Token
+    from lsv_duel_draft.tokens import match_makers
+
+    tokens = [Token("Treasure", "", "u/t", makers=("Fable // Reflection", "Ragavan")),
+              Token("Clue", "", "u/c", makers=("Not In Cube",))]
+    cards = [Card("f", Face("Fable", "", "u/f"), Face("Reflection", "", "u/r")), Card("r", Face("Ragavan", "", "u/g"))]
+    used, makers, missing = match_makers(tokens, cards)
+    assert [t.label for t in used] == ["Treasure"]
+    assert makers == {"f": ["Treasure"], "r": ["Treasure"]}
+    assert missing == ["Not In Cube"]
+
+
+def test_tokens_reach_the_script_with_their_own_sheet() -> None:
+    import json
+
+    from lsv_duel_draft.models import Token
+    from lsv_duel_draft.tts_save import TOKEN_SHEET_BASE, assign_token_slots
+
+    cards = [Card("a", Face("Ragavan", "", "u/a"))]
+    tokens = [Token("Treasure", "Token Artifact", "u/t"), Token("Day // Night", "Card", "u/d", "u/n")]
+    slots = assign_token_slots(tokens)
+    assert [s.card_id for s, _ in slots] == [TOKEN_SHEET_BASE * 100, TOKEN_SHEET_BASE * 100 + 1]
+    assert slots[0][1] is None and slots[1][1] is not None and slots[1][1].index == 2, "backs follow the fronts"
+
+    fronts, _ = assign_slots(cards)
+    ids = {s.sheet_id for s in fronts} | {TOKEN_SHEET_BASE}
+    sheets = {i: Sheet(i, f"s{i}.jpg", f"https://h/s{i}.jpg") for i in ids}
+    save = build_save(cards, sheets, "https://h/back.jpg", "LSVCube", tokens=tokens, makers={"a": ["Treasure"]})
+    line = save["LuaScript"].split("\n")[1]
+    data = json.loads(line.removeprefix("TOKENS_JSON = [==[").removesuffix("]==]"))
+    assert data["makers"] == {"a": ["Treasure"]}
+    treasure = data["tokens"]["Treasure"]
+    assert treasure["Nickname"] == "Treasure" and json.loads(treasure["GMNotes"]) == {"token": "Treasure"}
+    assert list(treasure["CustomDeck"]) == [str(TOKEN_SHEET_BASE)]
+    assert "States" in data["tokens"]["Day // Night"], "double-faced tokens can be flipped"

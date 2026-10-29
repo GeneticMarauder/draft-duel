@@ -3,7 +3,7 @@
 --
 -- Each player's half of the table, from the middle outward:
 --   middle strip  : cube deck and face-up discard pile (z = 0)
---   pack row      : the current pack, 4 large cards side by side, with Draft buttons
+--   pack row      : the current pack, 5 large cards side by side, with Draft buttons
 --   pick grid     : the player's picks, 12 x 4 smaller cards
 -- Privacy is per card: the pack is hidden from the opponent (they see card
 -- backs), picks are invisible to everyone but their owner.
@@ -686,7 +686,116 @@ function startGame()
   end
   broadcastToAll("Game on! " .. firstPlayer .. " goes first. Libraries are shuffled and you have drawn 7.",
     { 0.5, 1, 0.5 })
+  addTokenMenus()
   updateUI()
+end
+
+-- ---------------------------------------------------------------- tokens
+-- During the game, right-clicking a card that makes tokens offers
+-- "Create <token>": the token appears beside that card (or, for a card in
+-- hand, on your side of the table). Which cards make which tokens comes from
+-- the TOKENS_JSON script header, keyed by the card id in GMNotes. Menus are
+-- lost when a card goes into a deck or the game reloads, so they are re-added
+-- whenever a card appears.
+
+TOKEN_STEP = 2.6       -- tokens made by one card fan out to its owner's right...
+TOKEN_FAN = 5          -- ...this many, then start again beside the card
+TOKEN_HOME_U = -8      -- where tokens from a card in hand land (owner-relative)
+TOKEN_HOME_Z = 8
+-- One of a kind: creating it again moves the existing card to you.
+UNIQUE_TOKENS = { ["The Monarch"] = true, ["Day // Night"] = true }
+
+local tokenData = { tokens = {}, makers = {} }
+local tokenFan = {}    -- source guid (or "home_<color>") -> tokens made beside it so far
+
+function loadTokens()
+  if TOKENS_JSON then tokenData = JSON.decode(TOKENS_JSON) or tokenData end
+end
+
+-- Token labels this card makes, or nil.
+function tokensFor(obj)
+  if obj == nil or obj.type ~= "Card" then return nil end
+  local id = cardInfo(obj).id
+  if id == nil then return nil end
+  return tokenData.makers[id]
+end
+
+-- Adds the "Create <token>" menu entries (calling it again replaces them).
+function addTokenMenu(obj)
+  local labels = tokensFor(obj)
+  if labels == nil then return end
+  obj.clearContextMenu()
+  for _, label in ipairs(labels) do
+    obj.addContextMenuItem("Create " .. label, function(color) createToken(color, label, obj) end)
+  end
+end
+
+function addTokenMenus()
+  for _, o in ipairs(getObjects()) do addTokenMenu(o) end
+end
+
+local function inSomeHand(obj)
+  local guid = obj.getGUID()
+  for _, color in ipairs(COLORS) do
+    for _, h in ipairs(Player[color].getHandObjects() or {}) do
+      if h.getGUID() == guid then return true end
+    end
+  end
+  return false
+end
+
+-- Next spot beside the source card, fanning out to the owner's right.
+local function tokenSpot(color, source)
+  local key, x, z
+  if source ~= nil and not inSomeHand(source) then
+    local p = source.getPosition()
+    key, x, z = source.getGUID(), p.x, p.z
+  else
+    key, x, z = "home_" .. color, worldX(color, TOKEN_HOME_U), sideSign(color) * TOKEN_HOME_Z
+  end
+  local k = (tokenFan[key] or 0) % TOKEN_FAN + 1
+  tokenFan[key] = k
+  return { x = x + worldX(color, k * TOKEN_STEP), y = L.feltY + 0.5 + k * 0.1, z = z }
+end
+
+local function findToken(label)
+  for _, o in ipairs(getObjects()) do
+    if o.type == "Card" and cardInfo(o).token == label then return o end
+  end
+  return nil
+end
+
+function createToken(color, label, source)
+  local data = tokenData.tokens[label]
+  if data == nil or L == nil then return end
+  if not inList(COLORS, color) then
+    say(color, "Sit at White or Red to create tokens.")
+    return
+  end
+  local spot = tokenSpot(color, source)
+  local rot = { x = 0, y = seatYaw(color), z = 0 }
+  if UNIQUE_TOKENS[label] then
+    local existing = findToken(label)
+    if existing then
+      existing.setPosition(spot)
+      existing.setRotation(rot)
+      broadcastToAll(color .. " takes " .. label .. ".", { 0.6, 0.85, 1 })
+      return
+    end
+  end
+  spawnObjectData({ data = data, position = spot, rotation = rot })
+end
+
+-- Drawn, dealt and searched-for cards are new objects with no menu yet.
+function onObjectSpawn(obj)
+  if not playing then return end
+  Wait.frames(function()
+    if obj ~= nil then addTokenMenu(obj) end
+  end, 1)
+end
+
+function onObjectLeaveContainer(container, obj)
+  onObjectSpawn(obj)
 end
 
 -- ---------------------------------------------------------------- privacy
@@ -742,6 +851,7 @@ function onObjectStateChange(obj, oldGuid)
     end
   end
   rehide(obj)
+  if playing then addTokenMenu(obj) end
 end
 
 function onObjectDrop(color, obj)
@@ -834,6 +944,7 @@ function onLoad(saved)
 
   BASIC_LANDS = {}
   if BASIC_LANDS_JSON then BASIC_LANDS = JSON.decode(BASIC_LANDS_JSON) or {} end
+  loadTokens()
 
   Wait.frames(function()
     computeLayout()
@@ -854,6 +965,7 @@ function onLoad(saved)
       end
     end
     if playing then
+      addTokenMenus()
       updateUI()
       for _, color in ipairs(COLORS) do frameCamera(color) end
     elseif draft.finished then

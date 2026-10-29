@@ -1,7 +1,7 @@
 [project]
 name = "lsv-duel-draft"
 version = "0.1.0"
-description = "Builds a Tabletop Simulator 1v1 pick-from-4 draft of LSV's powered cube"
+description = "Builds a Tabletop Simulator 1v1 pick-from-5 draft of LSV's powered cube"
 readme = "README.md"
 authors = [
     { name = "Justin Hittell", email = "justin.hittell@gmail.com" }

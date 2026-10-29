@@ -8,11 +8,13 @@ from datetime import datetime
 from importlib import resources
 from typing import Any
 
-from lsv_duel_draft.models import Card, Sheet, SheetSlot
+from lsv_duel_draft.models import Card, Sheet, SheetSlot, Token
 from lsv_duel_draft.sheets import COLS, PER_SHEET, ROWS
+from lsv_duel_draft.tokens import token_faces
 
 SAVE_NAME = "LSV Cube Duel Draft"
 FRONT_SHEET_BASE = 1
+TOKEN_SHEET_BASE = 41
 BACK_SHEET_BASE = 51
 CUBE_GUID = "c00001"
 HAND_GUIDS = {"White": "a00001", "Red": "a00002"}
@@ -102,6 +104,38 @@ def basic_land_objects(basics: list[Card], slots: Sequence[SheetSlot], sheets: d
     ]
 
 
+def assign_token_slots(tokens: list[Token]) -> list[tuple[SheetSlot, SheetSlot | None]]:
+    """(front, back) slot per token on the token sheets, in :func:`token_faces` order."""
+    slots = [SheetSlot(TOKEN_SHEET_BASE + i // PER_SHEET, i % PER_SHEET)
+             for i in range(len(token_faces(tokens)))]
+    out: list[tuple[SheetSlot, SheetSlot | None]] = []
+    n_backs = 0
+    for i, token in enumerate(tokens):
+        back = None
+        if token.back_url:
+            back = slots[len(tokens) + n_backs]
+            n_backs += 1
+        out.append((slots[i], back))
+    return out
+
+
+def token_objects(tokens: list[Token], sheets: dict[int, Sheet], back_url: str) -> dict[str, dict[str, Any]]:
+    """Spawnable card data per token label; double-faced tokens carry their back as state 2.
+
+    GMNotes ``{"token": label}`` lets the script find a token it made (and
+    keeps tokens out of the deck editor, which looks for ``id``).
+    """
+    out = {}
+    for i, (token, (front, back)) in enumerate(zip(tokens, assign_token_slots(tokens), strict=True)):
+        note = json.dumps({"token": token.label})
+        obj = _card_object(f"{0xa10000 + i:06x}", token.label, token.text, note, front, sheets, back_url)
+        if back is not None:
+            obj["States"] = {"2": _card_object(f"{0xa20000 + i:06x}", token.label, token.text, note,
+                                               back, sheets, back_url)}
+        out[token.label] = obj
+    return out
+
+
 def _zones() -> list[dict[str, Any]]:
     """Hand zones for both seats (the Lua script moves them to fit the table).
 
@@ -115,10 +149,18 @@ def _zones() -> list[dict[str, Any]]:
     ]
 
 
-def global_lua(basic_lands: list[dict[str, Any]] | None = None) -> str:
-    """The Global script: basic-land data, rules engine, then the table adapter."""
+def global_lua(basic_lands: list[dict[str, Any]] | None = None,
+               tokens: dict[str, Any] | None = None) -> str:
+    """The Global script: basic-land and token data, rules engine, then the table adapter.
+
+    ``tokens`` is ``{"tokens": {label: card data}, "makers": {card id: [label, ...]}}``.
+    """
     pkg = resources.files("lsv_duel_draft") / "lua"
-    header = f"BASIC_LANDS_JSON = [==[{json.dumps(basic_lands or [])}]==]\n"
+    lands_json = json.dumps(basic_lands or [])
+    tokens_json = json.dumps(tokens or {"tokens": {}, "makers": {}})
+    if "]==]" in lands_json + tokens_json:
+        raise ValueError("card text would end the Lua long string early")
+    header = f"BASIC_LANDS_JSON = [==[{lands_json}]==]\nTOKENS_JSON = [==[{tokens_json}]==]\n"
     return (header + (pkg / "draft_core.lua").read_text(encoding="utf-8") + "\n"
             + (pkg / "table.lua").read_text(encoding="utf-8"))
 
@@ -129,15 +171,20 @@ def global_xml() -> str:
 
 
 def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_name: str,
-               basics: list[Card] | None = None) -> dict[str, Any]:
+               basics: list[Card] | None = None, tokens: list[Token] | None = None,
+               makers: dict[str, list[str]] | None = None) -> dict[str, Any]:
     """The complete save: table, zones, cube deck, scripts and UI.
 
-    Basic lands share the front sheets, placed after the cube's cards.
+    Basic lands share the front sheets, placed after the cube's cards. Tokens
+    have their own sheets; ``makers`` maps cube card id -> token labels it makes.
     """
     basics = basics or []
     fronts, backs = assign_slots(cards + basics)
+    if fronts and fronts[-1].sheet_id >= TOKEN_SHEET_BASE:
+        raise ValueError("too many cards: front sheets would overlap the token sheets")
     n = len(cards)
     lands = basic_land_objects(basics, fronts[n:], sheets, back_url)
+    token_data = {"tokens": token_objects(tokens or [], sheets, back_url), "makers": makers or {}}
     return {
         "SaveName": SAVE_NAME,
         "GameMode": SAVE_NAME,
@@ -150,11 +197,11 @@ def build_save(cards: list[Card], sheets: dict[int, Sheet], back_url: str, cube_
         "PlayArea": 0.5,
         "Table": "Table_RPG",
         "Sky": "Sky_Museum",
-        "Note": f"1v1 pick-from-4 draft of {cube_name}. Sit at White and Red, then press Start Draft.",
+        "Note": f"1v1 pick-from-5 draft of {cube_name}. Sit at White and Red, then press Start Draft.",
         "Rules": "",
         "TabStates": {},
         "Hands": {"Enable": True, "DisableUnused": False, "Hiding": 0},
-        "LuaScript": global_lua(lands),
+        "LuaScript": global_lua(lands, token_data),
         "LuaScriptState": "",
         "XmlUI": global_xml(),
         "ObjectStates": [*_zones(), build_cube_deck(cards, fronts[:n], backs[:n], sheets, back_url)],

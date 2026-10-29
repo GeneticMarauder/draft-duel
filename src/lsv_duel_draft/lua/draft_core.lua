@@ -1,11 +1,11 @@
--- DraftCore: pure rules engine for the 1v1 pick-from-4 draft.
+-- DraftCore: pure rules engine for the 1v1 pick-from-5 draft.
 -- No Tabletop Simulator API in here, so it can be unit tested outside the game.
 --
 -- One pack, started by S (the other player is O):
---   step 1: S draws 4, takes 1          -> pack passes to O
---   step 2: O tops the pack up to 4, takes 1
---   step 3: O tops the pack up to 4, takes 1 -> pack passes back to S
---   step 4: S tops the pack up to 4, takes 1 -> the 3 leftovers are discarded
+--   step 1: S draws 5, takes 1          -> pack passes to O
+--   step 2: O tops the pack up to 5, takes 1
+--   step 3: O tops the pack up to 5, takes 1 -> pack passes back to S
+--   step 4: S tops the pack up to 5, takes 1 -> the 4 leftovers are discarded
 -- The starting player alternates every pack.
 --
 -- The engine returns "actions" for the table adapter to perform:
@@ -18,7 +18,7 @@
 DraftCore = {}
 DraftCore.__index = DraftCore
 
-DraftCore.PACK_SIZE = 4
+DraftCore.PACK_SIZE = 5
 
 -- opts.colors: {colorA, colorB}; opts.picksPerPlayer: defaults to 48;
 -- opts.firstStarter: color that starts pack 1 (defaults to colors[1]).
