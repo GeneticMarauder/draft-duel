@@ -15,7 +15,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from draft_duel import playmats, zones
+from PIL import Image
+
+from draft_duel import playmats, props, tabletop, zones
 from draft_duel import sheets as sh
 from draft_duel.cubes import CUBES, DEFAULT_CUBES, load_cube, resolve
 from draft_duel.models import Card, Cube, Sheet, Token
@@ -36,6 +38,7 @@ from draft_duel.tts_save import (
     SAVE_NAME,
     TOKEN_SHEET_BASE,
     build_save,
+    deck_entry,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,9 +75,11 @@ def tts_saves_dirs() -> list[Path]:
 
 
 def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: str,
-               tokens: list[Token] | None = None) -> tuple[dict[int, Sheet], str, list[dict[str, str]], str]:
-    """Render card, token, playmat and zone-board images; return sheets by id, the card back URL, the mats
-    and the zone board's URL."""
+               tokens: list[Token] | None = None, prop_faces: list[str] | None = None,
+               prop_tokens: list[str] | None = None,
+               ) -> tuple[dict[int, Sheet], str, list[dict[str, str]], str, str, dict[str, str]]:
+    """Render card, token, playmat, zone-board, table and prop images; return sheets by id, the card back
+    URL, the mats, the zone board's URL, the table's URL and our URL for each prop token image."""
     SHEETS_DIR.mkdir(exist_ok=True)
     sheets: dict[int, Sheet] = {}
     written: set[str] = set()
@@ -90,6 +95,16 @@ def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: st
         add(BACK_SHEET_BASE + i, group, f"back{i + 1:02d}")
     for i, group in enumerate(sh.chunk(token_faces(tokens or []))):
         add(TOKEN_SHEET_BASE + i, group, f"tokens{i + 1:02d}")
+    for i, group in enumerate(sh.chunk(prop_faces or [])):
+        add(props.PROP_SHEET_BASE + i, group, f"props{i + 1:02d}")
+    prop_token_urls: dict[str, str] = {}
+    for i, url in enumerate(prop_tokens or [], 1):
+        with Image.open(images[url]) as img:
+            img = img.convert("RGBA")
+            img.thumbnail((488, 680), Image.LANCZOS)  # Scryfall's "normal" size
+            name = sh.save_hashed_png(img, SHEETS_DIR, f"proptoken{i:02d}")
+        written.add(name)
+        prop_token_urls[url] = raw_url(slug, branch, name)
 
     back_name = sh.save_hashed(sh.card_back(images[MAGIC_CARD_BACK]), SHEETS_DIR, "cardback")
     written.add(back_name)
@@ -99,12 +114,14 @@ def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: st
         mats.append({"name": name, "url": raw_url(slug, branch, filename), "thumb": raw_url(slug, branch, thumb)})
 
     zones_name = zones.render_all(SHEETS_DIR)
-    written.add(zones_name)
+    table_name = tabletop.render_all(SHEETS_DIR)
+    written.update((zones_name, table_name))
 
-    for old in SHEETS_DIR.glob("*.jpg"):
+    for old in [*SHEETS_DIR.glob("*.jpg"), *SHEETS_DIR.glob("*.png")]:
         if old.name not in written:
             old.unlink()
-    return sheets, raw_url(slug, branch, back_name), mats, raw_url(slug, branch, zones_name)
+    return (sheets, raw_url(slug, branch, back_name), mats, raw_url(slug, branch, zones_name),
+            raw_url(slug, branch, table_name), prop_token_urls)
 
 
 def push_sheets(cube: str) -> None:
@@ -116,6 +133,17 @@ def push_sheets(cube: str) -> None:
     _git("commit", "-m", f"Update card sheets for {cube}")
     _git("push", "origin", "HEAD")
     print("Pushed sheets to GitHub.")
+
+
+def unpublished_sheets(branch: str, sheets_dir: Path = SHEETS_DIR) -> list[str]:
+    """Images in the sheets folder that ``origin/<branch>`` lacks. Names carry a content hash, so a name
+    on the branch means the same image is there; TTS shows a missing one as blank white cards."""
+    try:
+        published = _git("ls-tree", "--name-only", f"origin/{branch}", "sheets/").splitlines()
+    except subprocess.CalledProcessError:
+        published = []
+    names = {Path(p).name for p in published}
+    return sorted(p.name for p in sheets_dir.iterdir() if p.is_file() and p.name not in names)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -158,9 +186,12 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Tokens: {len(tokens)} made by {len(makers)} cube cards")
         if missing:
             print(f"  in no cube (check data/tokens.csv): {', '.join(missing)}")
+        table_props = props.load_props(props.workshop_file())
+        prop_faces = props.card_faces(table_props)
+        prop_tokens = props.token_images(table_props)
         urls = list(dict.fromkeys([c.front.image_url for c in everything]
                                   + [c.back.image_url for c in everything if c.back]
-                                  + token_faces(tokens) + [MAGIC_CARD_BACK]))
+                                  + token_faces(tokens) + prop_faces + prop_tokens + [MAGIC_CARD_BACK]))
         images: dict[str, Path] = {}
         for n, url in enumerate(urls, 1):
             images[url] = download_image(client, url, CACHE_DIR)
@@ -168,11 +199,20 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  images {n}/{len(urls)}")
 
     # Cubes' cards fill the front sheets in order, then the basics (see tts_save.build_save).
-    sheets, back_url, mats, zones_url = render_all(everything, images, slug, args.branch, tokens)
+    sheets, back_url, mats, zones_url, table_url, prop_token_urls = render_all(
+        everything, images, slug, args.branch, tokens, prop_faces, prop_tokens)
     dfc = sum(1 for c in cards if c.back)
     print(f"Rendered {len(sheets)} sheets ({dfc} double-faced cards) and {len(mats)} playmats.")
 
-    save = build_save(cubes, sheets, back_url, basics, tokens, makers, mats, zones_url)
+    if table_props:
+        prop_sheets = {sid: deck_entry(sheet, back_url) for sid, sheet in sheets.items() if sid >= props.PROP_SHEET_BASE}
+        table_props = props.rehost(table_props, prop_faces, prop_sheets, sh.PER_SHEET)
+        table_props = props.rehost_tokens(table_props, prop_token_urls)
+        print(f"Added {len(table_props)} table props from the MTG EDH mod ({len(prop_faces)} card and "
+              f"{len(prop_tokens)} token images rehosted).")
+    else:
+        print(f"Table props skipped: subscribe to the MTG EDH table (Workshop {props.WORKSHOP_ID}) and load it once.")
+    save = build_save(cubes, sheets, back_url, basics, tokens, makers, mats, zones_url, table_url, table_props)
     DIST_DIR.mkdir(exist_ok=True)
     out = DIST_DIR / f"{SAVE_NAME}.json"
     out.write_text(json.dumps(save, indent=1, ensure_ascii=False), encoding="utf-8")
@@ -187,3 +227,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.push:
         push_sheets(" + ".join(c.name for c in cubes))
+    elif missing_sheets := unpublished_sheets(args.branch):
+        print(f"WARNING: {len(missing_sheets)} image(s) this save uses are not on origin/{args.branch}, so "
+              "they load blank white in game until pushed (rerun with --push):")
+        for name in missing_sheets:
+            print(f"  sheets/{name}")

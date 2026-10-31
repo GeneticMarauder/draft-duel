@@ -206,11 +206,25 @@ group = function(objs)
     return o
   end
   d.takeObject = function(params)
-    local idx = 1
+    local idx = 1 -- the top
+    if params.top == false then idx = #d.cards end
     for i, g in ipairs(d.cards) do
       if g == params.guid then idx = i end
     end
-    return take(idx, params.position)
+    local o = take(idx, params.position)
+    if params.rotation then o.setRotation(params.rotation) end
+    return o
+  end
+  -- Seen in TTS: a card turned like the deck and put in from above lands on top, from below on the bottom.
+  d.putObject = function(obj)
+    if d.locked then return nil end
+    if tryObjectEnterContainer and tryObjectEnterContainer(d, obj) == false then return nil end
+    local at = 1
+    if obj.pos.y < d.pos.y then at = #d.cards + 1 end
+    table.insert(d.cards, at, obj.guid)
+    d.stored[obj.guid] = obj
+    Mock.objects[obj.guid] = nil
+    return d
   end
   d.deal = function(n, color)
     Mock.dealt = Mock.dealt or {}

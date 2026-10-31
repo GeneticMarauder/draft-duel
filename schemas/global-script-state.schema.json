@@ -7,7 +7,6 @@
   "required": ["draft"],
   "properties": {
     "draft": { "type": "object", "description": "DraftCore:serialize() — pack, picks per color, starter, counters." },
-    "discard": { "type": ["string", "null"], "description": "GUID of the face-up discard pile." },
     "bots": { "type": "array", "items": { "type": "string" }, "description": "Seat colors a bot drafts for." },
     "ready": { "type": "object", "additionalProperties": { "type": "boolean" }, "description": "color -> pressed Ready to play." },
     "piles": { "type": "object", "description": "color -> { library = guid, sideboard = guid }." },
@@ -20,6 +19,9 @@
     "mats": { "type": "object", "description": "color -> { name, guid } of the seat's playmat tile." },
     "cubeKey": { "type": "string", "description": "Key of the cube on the table (an entry of CUBES_JSON)." },
     "cubeGuid": { "type": "string", "description": "GUID of the cube deck; c00001 until players switch cubes." },
-    "boards": { "type": "object", "additionalProperties": { "type": "string" }, "description": "color -> GUID of the seat's zone board (from Ready until Next game)." }
+    "boards": { "type": "object", "additionalProperties": { "type": "string" }, "description": "color -> GUID of the seat's zone board (from Ready until Next game)." },
+    "looks": { "type": "object", "description": "color -> { mode = \"scry\" | \"surveil\", cards = [guid] } while the seat is looking at the top of its library." },
+    "mulligans": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "color -> mulligans taken this game." },
+    "bottomOwed": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "color -> cards still to put on the bottom after a mulligan." }
   }
 }

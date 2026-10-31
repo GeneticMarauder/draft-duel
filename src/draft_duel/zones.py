@@ -1,4 +1,5 @@
-"""The zone board: each player's Library / Graveyard / Exile slots and Draw / Untap buttons.
+"""The zone board: each player's Library / Graveyard / Exile slots, Draw / Untap buttons and
+Scry / Surveil / Mulligan beside them.
 
 One board per seat lies on the owner's right edge of their battlefield while a
 game is on (borrowed from the popular MTG EDH table). This module is the single
@@ -29,11 +30,20 @@ SLOTS = {
     "graveyard": {"d": 9.05, "w": 2.5, "h": 3.3, "label": "GRAVEYARD"},
     "library": {"d": 14.95, "w": 2.5, "h": 3.3, "label": "LIBRARY"},
 }
-# Real TTS buttons sit on these strips, between the graveyard and the library.
+# Real TTS buttons sit on these strips, between the graveyard and the library. Buttons with a ``u``
+# float just right of the board (they belong to it, but the image paints no strip for them): Scry
+# beside Untap, Surveil beside Draw, Mulligan above Scry (away from the sideboard pile).
+SIDE_U = BOARD["u"] + BOARD["w"] / 2 + 0.2 + 1.1
 BUTTONS = {
     "untap": {"d": 11.45, "w": 2.6, "h": 0.9, "label": "Untap"},
     "draw": {"d": 12.55, "w": 2.6, "h": 0.9, "label": "Draw"},
+    "mulligan": {"u": SIDE_U, "d": 10.35, "w": 2.2, "h": 0.9, "label": "Mulligan"},
+    "scry": {"u": SIDE_U, "d": 11.45, "w": 2.2, "h": 0.9, "label": "Scry"},
+    "surveil": {"u": SIDE_U, "d": 12.55, "w": 2.2, "h": 0.9, "label": "Surveil"},
 }
+# Cards being scried or surveilled float face-up (hidden from the opponent) in a row from here
+# toward the owner's left, one card further each click.
+LOOK = {"u": BOARD["u"] - BOARD["w"] / 2 - 0.3 - 1.1, "d": 9.6, "step": 2.5}
 # Off the board: the sideboard pile (beyond the mat's right edge) and the dice (owner's left corner).
 SIDEBOARD = {"u": 25.5, "d": 14.95}
 DICE = [
@@ -43,7 +53,7 @@ DICE = [
 ]
 
 LAYOUT: dict[str, Any] = {"board": BOARD, "slots": SLOTS, "buttons": BUTTONS,
-                          "sideboard": SIDEBOARD, "dice": DICE}
+                          "sideboard": SIDEBOARD, "dice": DICE, "look": LOOK}
 
 BOARD_SIZE = (round(BOARD["w"] * PX_PER_UNIT), round(BOARD["h"] * PX_PER_UNIT))
 
@@ -75,7 +85,7 @@ def render_board() -> Image.Image:
         draw.rounded_rectangle(box, radius=20, fill=SLOT_FILL, outline=SLOT_LINE, width=5)
         cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
         draw.text((cx, cy), slot["label"], fill=LABEL, font=font, anchor="mm")
-    for button in BUTTONS.values():
+    for button in (b for b in BUTTONS.values() if "u" not in b):
         draw.rounded_rectangle(_box(BOARD["u"], button["d"], button["w"], button["h"]), radius=14, fill=BUTTON_WELL)
     return img
 

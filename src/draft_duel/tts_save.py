@@ -9,6 +9,7 @@ from importlib import resources
 from typing import Any
 
 from draft_duel import zones
+from draft_duel.props import merge as merge_props
 from draft_duel.models import Card, Cube, Sheet, SheetSlot, Token
 from draft_duel.sheets import COLS, PER_SHEET, ROWS
 from draft_duel.tokens import token_faces
@@ -44,7 +45,8 @@ def _transform(x: float = 0, y: float = 1, z: float = 0, ry: float = 0, rz: floa
             "scaleX": sx, "scaleY": sy, "scaleZ": sz}
 
 
-def _deck_entry(sheet: Sheet, back_url: str) -> dict[str, Any]:
+def deck_entry(sheet: Sheet, back_url: str) -> dict[str, Any]:
+    """A ``CustomDeck`` entry for one of our sheets."""
     return {"FaceURL": sheet.url, "BackURL": back_url, "NumWidth": COLS, "NumHeight": ROWS,
             "BackIsHidden": True, "UniqueBack": False, "Type": 0}
 
@@ -64,7 +66,7 @@ def _card_object(guid: str, name: str, text: str, note: str, slot: SheetSlot,
         "Description": text,
         "GMNotes": note,
         "CardID": slot.card_id,
-        "CustomDeck": {str(slot.sheet_id): _deck_entry(sheets[slot.sheet_id], back_url)},
+        "CustomDeck": {str(slot.sheet_id): deck_entry(sheets[slot.sheet_id], back_url)},
         "HideWhenFaceDown": True,
         "Hands": True,
         "Tooltip": True,
@@ -95,7 +97,7 @@ def build_cube_deck(cards: list[Card], fronts: Sequence[SheetSlot], backs: Seque
         "Description": f"{len(cards)} cards",
         "DeckIDs": [s.card_id for s in fronts],
         # Only this cube's sheets, so TTS doesn't fetch the other cubes' images.
-        "CustomDeck": {str(i): _deck_entry(sheets[i], back_url) for i in sorted({s.sheet_id for s in fronts})},
+        "CustomDeck": {str(i): deck_entry(sheets[i], back_url) for i in sorted({s.sheet_id for s in fronts})},
         "ContainedObjects": contained,
         "HideWhenFaceDown": True,
         "Hands": False,
@@ -274,7 +276,8 @@ def build_save(cubes: list[Cube], sheets: dict[int, Sheet], back_url: str,
                basics: list[Card] | None = None, tokens: list[Token] | None = None,
                makers: dict[str, list[str]] | None = None,
                mats: list[dict[str, str]] | None = None,
-               zones_url: str | None = None) -> dict[str, Any]:
+               zones_url: str | None = None, table_url: str | None = None,
+               props: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """The complete save: table, zones, cube deck, scripts and UI.
 
     The first cube is on the table when the save loads; every cube's deck is also
@@ -282,7 +285,9 @@ def build_save(cubes: list[Cube], sheets: dict[int, Sheet], back_url: str,
     take the front sheets cube by cube, then the basic lands. Tokens have their
     own sheets; ``makers`` maps card id -> token labels it makes. ``mats`` lists
     the playmats players can choose (``name``, image ``url`` and ``thumb``);
-    ``zones_url`` is the zone board image (see ``zones.py``).
+    ``zones_url`` is the zone board image (see ``zones.py``); ``table_url`` the
+    table top (see ``tabletop.py``), on TTS's custom rectangle table (without it, ``Table_RPG``);
+    ``props`` are extra objects for the table's ends (see ``props.py``).
     """
     if not cubes:
         raise ValueError("a save needs at least one cube")
@@ -312,7 +317,8 @@ def build_save(cubes: list[Cube], sheets: dict[int, Sheet], back_url: str,
         "Tags": [],
         "Gravity": 0.5,
         "PlayArea": 0.5,
-        "Table": "Table_RPG",
+        "Table": "Table_Custom" if table_url else "Table_RPG",
+        **({"TableURL": table_url} if table_url else {}),
         "Sky": "Sky_Museum",
         "Note": (f"Draft Duel: a 1v1 pick-from-5 cube draft. Cubes: {names}. Choose one with the Cube button, "
                  "sit at White and Red, then press Start Draft."),
@@ -324,5 +330,5 @@ def build_save(cubes: list[Cube], sheets: dict[int, Sheet], back_url: str,
         "LuaScriptState": "",
         "XmlUI": global_xml(mats or [], cube_list),
         "CustomUIAssets": ui_assets(mats or []),
-        "ObjectStates": [*_zones(), decks[cubes[0].key]],
+        "ObjectStates": merge_props([*_zones(), decks[cubes[0].key]], props or []),
     }

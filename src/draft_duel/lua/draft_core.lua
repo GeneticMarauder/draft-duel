@@ -5,7 +5,7 @@
 --   step 1: S draws 5, takes 1          -> pack passes to O
 --   step 2: O tops the pack up to 5, takes 1
 --   step 3: O tops the pack up to 5, takes 1 -> pack passes back to S
---   step 4: S tops the pack up to 5, takes 1 -> the 4 leftovers are discarded
+--   step 4: S tops the pack up to 5, takes 1 -> the 4 leftovers are discarded (the table destroys them)
 -- The starting player alternates every pack.
 --
 -- The engine returns "actions" for the table adapter to perform:

@@ -15,7 +15,7 @@ Each pack, the starting player (S) and the other player (O) take turns like this
 | 1 | S | draw 5 from the cube | take 1 |
 | 2 | O | top up to 5 | take 1 |
 | 3 | O | top up to 5 | take 1 |
-| 4 | S | top up to 5 | take 1; the other 4 are discarded face-up |
+| 4 | S | top up to 5 | take 1; the other 4 vanish |
 
 The starting player alternates every pack. 24 packs gives each player 48 cards.
 
@@ -28,8 +28,8 @@ The starting player alternates every pack. 24 packs gives each player 48 cards.
    To practise alone, leave a seat empty: a bot drafts random cards for any seat that is empty at Start Draft.
 3. When it's your pick, your 5 pack cards are laid out large in front of you. Click **Draft** under
    the card you want (or right-click it → **Draft this card**). Your opponent sees only card backs.
-4. Your picks go into a grid below the pack, invisible to your opponent. The discard pile in the
-   middle is open: right-click it and choose **Search** to look through it.
+4. Your picks go into a grid below the pack, invisible to your opponent. The 4 cards nobody drafts
+   from each pack vanish from the table.
 5. When the draft ends you switch to **deck building**: your deck sits in the middle of the table in
    columns by mana value (lands last), and your sideboard is a smaller area to your right; drag
    cards between them. Add basic lands with the land buttons in the bottom panel (left-click adds

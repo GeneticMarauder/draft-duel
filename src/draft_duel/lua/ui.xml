@@ -19,15 +19,9 @@
 <Button id="cubeButton_Red" visibility="Red" active="false" rectAlignment="LowerRight" offsetXY="-24 200" width="240" height="36" fontSize="15"
         textColor="#FFFFFF" colors="#283593|#3949AB|#1A237E|#555555" onClick="onCubeButton">Cube: ?</Button>
 <!--CUBE_PICKERS-->
-<!-- Top centre: the status bar is hidden while playing. -->
-<Button id="nextGameButton" active="false" rectAlignment="UpperCenter" offsetXY="0 -82" width="240" height="40" fontSize="18"
+<!-- In TTS's toolbar row, in the gap just left of the player list (not under it: that corner gets no clicks). -->
+<Button id="nextGameButton" active="false" rectAlignment="UpperRight" offsetXY="-285 -14" width="240" height="44" fontSize="18"
         textColor="#FFFFFF" colors="#6A1B9A|#7B1FA2|#4A148C|#555555" onClick="onNextGameClicked">Next game</Button>
-<Panel id="prompt_White" visibility="White" active="false" rectAlignment="LowerCenter" offsetXY="0 40" width="700" height="54" color="#B8860BEE">
-  <Text fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Your pick! Click Draft under a card (or right-click it, then Draft this card)</Text>
-</Panel>
-<Panel id="prompt_Red" visibility="Red" active="false" rectAlignment="LowerCenter" offsetXY="0 40" width="700" height="54" color="#B8860BEE">
-  <Text fontSize="20" color="#FFFFFF" alignment="MiddleCenter">Your pick! Click Draft under a card (or right-click it, then Draft this card)</Text>
-</Panel>
 <Panel id="deck_White" visibility="White" active="false" rectAlignment="LowerCenter" offsetXY="0 24" width="780" height="124" color="#000000CC">
   <VerticalLayout padding="10 10 6 8" spacing="6">
     <Text id="deckText_White" fontSize="22" color="#FFD54F" alignment="MiddleCenter">Deck 0</Text>

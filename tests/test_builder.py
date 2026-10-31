@@ -350,3 +350,147 @@ def test_zone_board_image_matches_its_layout_and_reaches_the_script(tmp_path: Pa
     assert data["url"] == "https://h/z.jpg" and data["slots"] == zones.SLOTS
     plain = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg")
     assert "ZONES_JSON = [==[{}]==]" in plain["LuaScript"], "no image, no board"
+
+
+# ------------------------------------------------------------------ table top
+
+
+def test_table_image_fits_the_custom_table_and_reaches_the_save(tmp_path: Path) -> None:
+    from draft_duel import tabletop, zones
+
+    name = tabletop.render_all(tmp_path)
+    assert tabletop.render_all(tmp_path) == name, "drawing is deterministic"
+    with Image.open(tmp_path / name) as img:
+        w, h = img.size
+    assert max(w, h) <= 4096
+    assert abs(w / h - tabletop.TABLE_W / tabletop.TABLE_H) < 0.005, "TTS stretches the image over the table"
+    assert tabletop.PANEL_W >= 44, "the painted mat is at least as wide as the in-game playmat"
+    assert zones.BOARD["u"] + zones.BOARD["w"] / 2 < tabletop.PANEL_W / 2, "the zone slots are on the painted mat"
+    assert tabletop.MAT_MID + tabletop.MAT_D / 2 + tabletop.FRAME < tabletop.TABLE_H / 2
+
+    cards = [Card("a", Face("Bolt", "", "u/a"))]
+    fronts, _ = assign_slots(cards)
+    sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
+    save = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg", table_url="https://h/t.jpg")
+    assert save["Table"] == "Table_Custom" and save["TableURL"] == "https://h/t.jpg"
+    plain = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg")
+    assert plain["Table"] == "Table_RPG" and "TableURL" not in plain
+
+
+# ------------------------------------------------------------------ table props
+
+
+def test_props_are_read_from_the_edh_save_locked_and_never_collide(tmp_path: Path) -> None:
+    import json
+
+    from draft_duel import props
+
+    wanted = [g for guids in props.PROP_GUIDS.values() for g in guids]
+    objs = [{"GUID": g, "Name": "Infinite_Bag", "Locked": False,
+             "ContainedObjects": [{"GUID": "c00001", "Name": "Die_20"}]} for g in wanted]
+    objs.append({"GUID": "ffffff", "Name": "Custom_Token", "Nickname": "Card Importer"})  # not a prop
+    save_file = tmp_path / f"{props.WORKSHOP_ID}.json"
+    save_file.write_text(json.dumps({"ObjectStates": objs}), encoding="utf-8")
+
+    loaded = props.load_props(save_file)
+    assert [o["GUID"] for o in loaded] == wanted and all(o["Locked"] for o in loaded)
+    assert props.load_props(None) == [] and props.load_props(tmp_path / "missing.json") == []
+
+    cards = [Card("a", Face("Bolt", "", "u/a"))]
+    fronts, _ = assign_slots(cards)
+    sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
+    save = build_save([Cube("lsv", "LSV Cube", cards)], sheets, "https://h/back.jpg", props=loaded)
+
+    def guids(o):
+        return [o["GUID"]] + [g for c in o.get("ContainedObjects") or [] for g in guids(c)]
+    every = [g for o in save["ObjectStates"] for g in guids(o)]
+    assert len(every) == len(set(every)), "no GUID is used twice"
+    assert save["ObjectStates"][2]["GUID"] == "c00001", "the cube keeps its fixed GUID"
+    assert len(save["ObjectStates"]) == 3 + len(wanted)
+
+
+def test_props_name_what_the_edh_mod_no_longer_has(tmp_path: Path) -> None:
+    import json
+
+    import pytest
+
+    from draft_duel import props
+
+    save_file = tmp_path / "edh.json"
+    save_file.write_text(json.dumps({"ObjectStates": []}), encoding="utf-8")
+    with pytest.raises(KeyError, match="no longer has props"):
+        props.load_props(save_file)
+
+
+def test_prop_cards_move_from_dead_scryfall_hosts_onto_our_sheets() -> None:
+    from draft_duel import props
+
+    def card(guid: str, url: str, card_id: int) -> dict:
+        return {"GUID": guid, "Name": "Card", "CardID": card_id,
+                "CustomDeck": {str(card_id // 100): {"FaceURL": url, "BackURL": "https://dead/back.jpg",
+                                                     "NumWidth": 1, "NumHeight": 1}}}
+    old = "https://c1.scryfall.com/file/scryfall-cards/normal/front/5/8/aaa.jpg"
+    deck = {"GUID": "d40d7e", "Name": "Deck", "DeckIDs": [5500, 5400],
+            "CustomDeck": {}, "ContainedObjects": [card("x1", old, 5500),
+                                                   card("x2", "https://cards.scryfall.io/large/back/2/c/bbb.jpg?1", 5400)]}
+    bag = {"GUID": "a87f74", "Name": "Custom_Model_Bag", "ContainedObjects": [card("x3", old, 100)]}
+    steam = {"GUID": "b1", "Name": "Card", "CardID": 200,
+             "CustomDeck": {"2": {"FaceURL": "https://steamusercontent-a.akamaihd.net/ugc/1/", "BackURL": "b"}}}
+
+    faces = props.card_faces([deck, bag, steam])
+    assert faces == ["https://cards.scryfall.io/normal/front/5/8/aaa.jpg",
+                     "https://cards.scryfall.io/large/back/2/c/bbb.jpg?1"], "deduplicated, current host, Steam untouched"
+    base = props.PROP_SHEET_BASE
+    entry = {base: {"FaceURL": "https://h/props01.jpg", "BackURL": "https://h/back.jpg", "NumWidth": 10, "NumHeight": 7}}
+    new_deck, new_bag, new_steam = props.rehost([deck, bag, steam], faces, entry, per_sheet=69)
+    assert [c["CardID"] for c in new_deck["ContainedObjects"]] == [base * 100, base * 100 + 1]
+    assert new_deck["DeckIDs"] == [base * 100, base * 100 + 1] and set(new_deck["CustomDeck"]) == {str(base)}
+    assert new_bag["ContainedObjects"][0]["CardID"] == base * 100, "the same image shares a slot"
+    assert new_steam == steam and deck["DeckIDs"] == [5500, 5400], "originals are left alone"
+
+
+def test_custom_tokens_and_double_faced_prop_cards_are_rehosted_too() -> None:
+    from draft_duel import props
+
+    old_png = "https://c1.scryfall.com/file/scryfall-cards/png/front/4/7/poison.png?1"
+    bag = {"GUID": "81ae86", "Name": "Custom_Model_Infinite_Bag",
+           "ContainedObjects": [{"GUID": "t1", "Name": "Custom_Token", "CustomImage": {"ImageURL": old_png}}]}
+    label = {"GUID": "b86992", "Name": "Custom_Token", "CustomImage": {"ImageURL": old_png}}
+    day = {"GUID": "c1", "Name": "Card", "CardID": 100,
+           "CustomDeck": {"1": {"FaceURL": "https://c1.scryfall.com/file/scryfall-cards/normal/front/9/c/day.jpg"}},
+           "States": {"2": {"GUID": "c2", "Name": "Card", "CardID": 200, "CustomDeck": {
+               "2": {"FaceURL": "https://c1.scryfall.com/file/scryfall-cards/normal/back/9/c/day.jpg"}}}}}
+
+    assert props.token_images([bag, label]) == ["https://cards.scryfall.io/png/front/4/7/poison.png?1"]
+    new_bag, new_label = props.rehost_tokens([bag, label], {props.token_images([bag])[0]: "https://h/poison.png"})
+    assert new_bag["ContainedObjects"][0]["CustomImage"]["ImageURL"] == "https://h/poison.png"
+    assert new_label["CustomImage"]["ImageURL"] == "https://h/poison.png"
+
+    faces = props.card_faces([day])
+    assert len(faces) == 2, "the Night face is a card state and is rehosted too"
+    (new_day,) = props.rehost([day], faces, {props.PROP_SHEET_BASE: {"FaceURL": "https://h/p.jpg"}}, per_sheet=69)
+    assert new_day["States"]["2"]["CardID"] == props.PROP_SHEET_BASE * 100 + 1
+
+
+def test_build_names_sheets_the_branch_lacks(tmp_path: Path, monkeypatch) -> None:
+    import subprocess
+
+    from draft_duel import cli
+
+    for name in ("front01-aaa.jpg", "front09-new.jpg", "proptoken01-bbb.png"):
+        (tmp_path / name).write_bytes(b"x")
+    calls: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str) -> str:
+        calls.append(args)
+        return "sheets/front01-aaa.jpg\nsheets/front09-old.jpg\nsheets/proptoken01-bbb.png"
+
+    monkeypatch.setattr(cli, "_git", fake_git)
+    assert cli.unpublished_sheets("main", tmp_path) == ["front09-new.jpg"]
+    assert calls == [("ls-tree", "--name-only", "origin/main", "sheets/")]
+
+    def no_branch(*args: str) -> str:
+        raise subprocess.CalledProcessError(128, "git")
+
+    monkeypatch.setattr(cli, "_git", no_branch)
+    assert len(cli.unpublished_sheets("gone", tmp_path)) == 3, "an unknown branch has none of them"

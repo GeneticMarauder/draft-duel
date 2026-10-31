@@ -2,7 +2,7 @@
 -- The builder concatenates draft_core.lua + this file into the save's Global script.
 --
 -- Each player's half of the table, from the middle outward:
---   middle strip  : cube deck and face-up discard pile (z = 0)
+--   middle strip  : cube deck (z = 0); a pack's leftover cards vanish
 --   pack row      : the current pack, 5 large cards side by side, with Draft buttons
 --   pick grid     : the player's picks, 12 x 4 smaller cards
 -- Privacy is per card: the pack is hidden from the opponent (they see card
@@ -24,7 +24,6 @@ PICK_COLS = 12
 PICK_ROWS = 4
 PICK_GRID_Z = 9.8    -- distance of the first pick row's centre from the middle line
 HAND_Z = 20          -- hand zones (unused during the draft) sit past the table edge
-DISCARD_X = 6
 BOT_DELAY = 1.0
 CAMERA_PITCH = 60
 CAMERA_DISTANCE = 23
@@ -34,7 +33,6 @@ local cube = nil        -- the face-down cube deck
 local cubeGuid = CUBE_GUID -- its GUID (changes when players switch cubes)
 local cubeKey = nil     -- which entry of CUBES is on the table
 CUBES = {}              -- { { key = ..., name = ..., count = ... }, ... } from CUBES_JSON
-local discardGuid = nil -- face-up discard pile (a deck once 2+ cards land)
 local L = nil           -- measured sizes
 local bots = {}         -- color -> true for seats that were empty at Start Draft
 local building = false  -- deck editor mode (after the draft)
@@ -49,6 +47,10 @@ local tutored = {}       -- guids of cards taken with Booster Tutor this game (t
 local gameNumber = 1
 local mats = {}          -- color -> { name = ..., guid = ... } for each seat's chosen playmat
 local boards = {}        -- color -> guid of the seat's zone board (from Ready until Next game)
+local looks = {}         -- color -> { mode = "scry"/"surveil", cards = { guid, ... } } while looking at the top
+local mulligans = {}     -- color -> mulligans taken this game
+local bottomOwed = {}    -- color -> cards still to put on the bottom after a mulligan
+local mulliganArmed = {} -- color -> true for MULLIGAN_CONFIRM seconds after a first click on Mulligan
 ZONES = nil              -- zone board layout from ZONES_JSON (nil: no board, default pile spots)
 
 -- ---------------------------------------------------------------- helpers
@@ -98,22 +100,18 @@ end
 
 -- ---------------------------------------------------------------- layout
 
-FELT_Y = 0.96          -- Table_RPG's felt height (verified in TTS)
+FELT_Y = 0.96          -- felt height of Table_RPG and Table_Custom (both verified in TTS)
 
--- Measures the card size and felt height from the cube deck. A deck that has
--- not settled yet (a fresh save's cube starts half inside the table) gives a
--- wrong felt height, so anything below the verified felt falls back to it.
+-- Measures the card size from the cube deck. The felt height is the verified
+-- constant: measured from the deck it was wrong whenever the deck had not
+-- settled (a fresh save's cube started half inside the table; a switched-in
+-- cube was still dropping, and the playmat then covered the cards).
 function computeLayout()
   local w, h = 2.2, 3.06
   local size = boundsSize(cube)
   if size and size.x > 0.5 and size.z > 0.5 then w, h = size.x, size.z end
   local thick = (size and size.y > 0.1) and size.y or 2.1
-  local tableY, feltY = FELT_Y + thick / 2, FELT_Y
-  if cube then
-    local y = cube.getPosition().y
-    if y - thick / 2 >= FELT_Y - 0.1 then tableY, feltY = y, y - thick / 2 end
-  end
-  L = { w = w, h = h, tableY = tableY, feltY = feltY }
+  L = { w = w, h = h, tableY = FELT_Y + thick / 2, feltY = FELT_Y }
 end
 
 -- Moves the (unused) hand zones past the table edges.
@@ -224,9 +222,7 @@ function updateUI()
   UI.setAttribute("nextGameButton", "active", playing and "true" or "false")
   local started = draft and draft.started
   UI.setAttribute("startButton", "active", started and "false" or "true")
-  local picker = draft and draft:picker() or nil
   for _, color in ipairs(COLORS) do
-    UI.setAttribute("prompt_" .. color, "active", (picker == color and not building) and "true" or "false")
     UI.setAttribute("deck_" .. color, "active", building and "true" or "false")
     UI.setAttribute("ready_" .. color, "active", (building and not ready[color]) and "true" or "false")
     local c = deckCounts[color]
@@ -319,35 +315,12 @@ local function placePick(color, id, slot)
   card.setPosition(slotPosition(color, slot)) -- left unlocked: picks are yours to move
 end
 
+-- A pack's leftover cards leave the game: nobody drafts them and they never come back.
 local function discardCards(ids)
-  local toGroup = {}
-  local existing = discardGuid and getObjectFromGUID(discardGuid) or nil
-  if existing then table.insert(toGroup, existing) end
-  for i, id in ipairs(ids) do
+  for _, id in ipairs(ids) do
     local card = getObjectFromGUID(id)
-    if card then
-      makeUnpickable(card)
-      card.setHiddenFrom({})
-      card.setInvisibleTo({})
-      card.setLock(false)
-      card.setScale({ x = 1, y = 1, z = 1 })
-      card.setRotation({ x = 0, y = 180, z = 0 })
-      card.setPosition({ x = DISCARD_X, y = L.tableY + 1 + i * 0.3, z = 0 })
-      table.insert(toGroup, card)
-    end
+    if card then card.destruct() end
   end
-  Wait.time(function()
-    local alive = {}
-    for _, o in ipairs(toGroup) do
-      if o ~= nil then table.insert(alive, o) end
-    end
-    if #alive >= 2 then
-      local groups = group(alive)
-      if groups and groups[1] then discardGuid = groups[1].getGUID() end
-    elseif alive[1] then
-      discardGuid = alive[1].getGUID()
-    end
-  end, 1)
 end
 
 -- ---------------------------------------------------------------- flow
@@ -372,8 +345,8 @@ function runActions(actions)
   promptPicker()
 end
 
--- Schedules the bot's pick when it is a bot's turn. (Human pickers are
--- prompted by the on-screen "Your pick!" panel that updateUI shows.)
+-- Schedules the bot's pick when it is a bot's turn. (Human pickers see their
+-- pack laid out in front of them, with a Draft button under each card.)
 function promptPicker()
   local picker = draft:picker()
   if picker and bots[picker] then scheduleBotPick(picker) end
@@ -401,7 +374,7 @@ function tryPick(color, card)
 end
 
 -- Looks down at the seat's pack row, so the pack sits mid-screen with the
--- pick grid below it and the cube, discard pile and opponent beyond.
+-- pick grid below it and the cube and opponent beyond.
 function frameCamera(color)
   if L == nil or not inList(COLORS, color) or not Player[color].seated then return end
   local t = Player[color].getHandTransform()
@@ -450,7 +423,7 @@ function cardInfo(obj)
   return {}
 end
 
--- A drafted card or basic land (not the cube deck or discard pile).
+-- A drafted card or basic land (not the cube deck).
 function isDeckCard(obj)
   return obj ~= nil and obj.type == "Card" and cardInfo(obj).id ~= nil
 end
@@ -512,7 +485,7 @@ function layoutDeck(color, forceMain)
         o.setRotation({ x = 0, y = seatYaw(color), z = 0 })
         o.setPosition({
           x = worldX(color, a.u0 + c * a.step),
-          y = L.feltY + 0.1 + k * DECK_LAYER,
+          y = L.feltY + MAT_THICKNESS + 0.05 + k * DECK_LAYER, -- floating just above a playmat
           z = sign * (DECK_TOP_Z + (k - 1) * a.cascade),
         })
         o.setVelocity({ x = 0, y = 0, z = 0 })
@@ -708,7 +681,7 @@ function startGame()
     cube.setPosition({ x = -28, y = L.tableY + 1, z = 0 })
     cube.setLock(true)
   end
-  -- The discard pile: whatever cards or piles are left in the middle strip.
+  -- Whatever cards or piles are left in the middle strip (a discard pile from older saves).
   -- (Found by position, not GUID: merging cards into a pile can give it a new GUID.)
   local n = 0
   for _, o in ipairs(getObjects()) do
@@ -722,6 +695,7 @@ function startGame()
     end
   end
   firstPlayer = COLORS[math.random(1, 2)]
+  mulligans, bottomOwed = {}, {}
   for _, color in ipairs(COLORS) do
     local lib = findLibrary(color)
     if lib and lib.type == "Deck" then
@@ -777,19 +751,24 @@ function tokensFor(obj)
   return tokenData.makers[id]
 end
 
--- Adds a card's game-time menu: "Create <token>" for each token it makes and
--- "Open a booster" on Booster Tutor (calling it again replaces them).
+-- Adds a card's game-time menu: "Create <token>" for each token it makes,
+-- "Open a booster" on Booster Tutor and, on every drafted card, "Put on bottom
+-- of library" (mulligans, tuck effects). Calling it again replaces them.
 function addPlayMenu(obj)
-  if obj == nil or obj.type ~= "Card" or inBooster(obj) then return end
+  if obj == nil or obj.type ~= "Card" or inBooster(obj) or inLook(obj) then return end
   local labels = tokensFor(obj)
   local tutor = obj.getName() == BOOSTER_TUTOR
-  if labels == nil and not tutor then return end
+  local drafted = isDeckCard(obj)
+  if labels == nil and not tutor and not drafted then return end
   obj.clearContextMenu()
   for _, label in ipairs(labels or {}) do
     obj.addContextMenuItem("Create " .. label, function(color) createToken(color, label, obj) end)
   end
   if tutor then
     obj.addContextMenuItem("Open a booster", function(color) openBooster(color) end)
+  end
+  if drafted then
+    obj.addContextMenuItem("Put on bottom of library", function(color) putOnBottom(color, obj) end)
   end
 end
 
@@ -811,12 +790,16 @@ end
 -- counter (other than `ignore`). Bounds follow rotation, so tapped cards count as wide.
 local function onABoard(x, z)
   if ZONES == nil then return false end
+  local function near(color, u, d, w, h)
+    return math.abs(x - worldX(color, u)) < (w + L.w) / 2 + TOKEN_GAP - 0.01
+      and math.abs(z - sideSign(color) * d) < (h + L.h) / 2 + TOKEN_GAP - 0.01
+  end
   local b = ZONES.board
   for _, color in ipairs(COLORS) do
     if boards[color] then
-      if math.abs(x - worldX(color, b.u)) < (b.w + L.w) / 2 + TOKEN_GAP - 0.01
-          and math.abs(z - sideSign(color) * b.d) < (b.h + L.h) / 2 + TOKEN_GAP - 0.01 then
-        return true
+      if near(color, b.u, b.d, b.w, b.h) then return true end
+      for _, btn in pairs(ZONES.buttons) do -- the buttons beside the board
+        if btn.u and near(color, btn.u, btn.d, btn.w, btn.h) then return true end
       end
     end
   end
@@ -1114,6 +1097,7 @@ function nextGame()
   piles = {}
   firstPlayer = nil
   gameNumber = gameNumber + 1
+  looks, mulligans, bottomOwed = {}, {}, {} -- (look cards are owned cards: routed below by GUID)
   removeBoards() -- the sideboard columns need that edge of the table
   if booster then
     local open = {}
@@ -1206,25 +1190,45 @@ local function angleOff(a, b)
   return x
 end
 
--- Draw and Untap as real buttons on the board's painted strips. A tile's local
--- units are table units divided by its scale; local +z points at the owner.
+-- The board's buttons: Untap and Draw on its painted strips, Scry, Surveil and
+-- Mulligan just to its right (a button may sit outside its object). A tile's
+-- local units are table units divided by its scale; local +z points at the
+-- owner, and BUTTON_X_SIGN turns owner-right into a button's local x.
+BUTTON_X_SIGN = 1      -- TTS mirrors button x, so +x is the owner's right (seen in TTS, 2026-10-30)
+BOARD_BUTTONS = {
+  { key = "untap", click = "onZoneUntap", color = { 0.16, 0.45, 0.2 }, tooltip = "Untap all your permanents" },
+  { key = "draw", click = "onZoneDraw", color = { 0.13, 0.36, 0.62 }, tooltip = "Draw a card" },
+  { key = "mulligan", click = "onZoneMulligan", color = { 0.55, 0.2, 0.2 },
+    tooltip = "Shuffle your hand into your library and draw 7 (click twice). The first mulligan is free; "
+      .. "after each later one put a card on the bottom: right-click it > Put on bottom of library" },
+  { key = "scry", click = "onZoneScry", color = { 0.38, 0.25, 0.6 },
+    tooltip = "Look at the top card of your library; click again for one more. Put each on top or bottom" },
+  { key = "surveil", click = "onZoneSurveil", color = { 0.1, 0.42, 0.42 },
+    tooltip = "Look at the top card of your library; click again for one more. Put each on top or in your graveyard" },
+}
+
 function addBoardButtons(board, color)
   local b = ZONES.board
   local s = b.h / 2
   board.clearButtons()
-  for _, key in ipairs({ "untap", "draw" }) do
-    local btn = ZONES.buttons[key]
-    board.createButton({
-      click_function = key == "draw" and "onZoneDraw" or "onZoneUntap",
-      function_owner = Global,
-      label = btn.label,
-      position = { x = 0, y = BOARD_THICKNESS / 2 + 0.05, z = (btn.d - b.d) / s },
-      width = btn.w * BUTTON_UNITS / s, height = btn.h * BUTTON_UNITS / s,
-      font_size = btn.h * BUTTON_UNITS * 0.55 / s,
-      color = key == "draw" and { 0.13, 0.36, 0.62 } or { 0.16, 0.45, 0.2 },
-      font_color = { 1, 1, 1 },
-      tooltip = key == "draw" and "Draw a card" or "Untap all your permanents",
-    })
+  for _, def in ipairs(BOARD_BUTTONS) do
+    local btn = ZONES.buttons[def.key] -- (a save built before a button existed has no entry for it)
+    if btn then
+      local label = btn.label
+      if def.key == "mulligan" and mulliganArmed[color] then label = "Confirm?" end
+      board.createButton({
+        click_function = def.click,
+        function_owner = Global,
+        label = label,
+        position = { x = BUTTON_X_SIGN * ((btn.u or b.u) - b.u) / s, y = BOARD_THICKNESS / 2 + 0.05,
+                     z = (btn.d - b.d) / s },
+        width = btn.w * BUTTON_UNITS / s, height = btn.h * BUTTON_UNITS / s,
+        font_size = btn.h * BUTTON_UNITS * 0.55 / s,
+        color = def.color,
+        font_color = { 1, 1, 1 },
+        tooltip = def.tooltip,
+      })
+    end
   end
 end
 
@@ -1322,6 +1326,10 @@ end
 
 function drawCard(color)
   if not playing or L == nil then return end
+  if looks[color] then
+    say(color, "Put the cards you are looking at back first (Top / Bottom / Graveyard under each).")
+    return
+  end
   local lib = findLibrary(color)
   if lib == nil then
     say(color, "Your library is empty.")
@@ -1390,6 +1398,277 @@ function placeDice(color)
       })
     end
   end
+end
+
+-- ---------------------------------------------------------------- scry, surveil, mulligan
+-- Scry / Surveil (beside Untap / Draw) take the top card of the owner's library
+-- into a row beside their board, face-up for them and face-down for everyone
+-- else; each further click adds the next card. Under each card: Top, and
+-- Bottom (scry) or Graveyard (surveil). Top puts it back on top at once, so of
+-- several cards kept on top the last one put back is drawn first.
+-- Mulligan (London, first one free; click twice) shuffles the hand into the
+-- library and deals 7; from the second mulligan of a game on, the player then
+-- puts one card per mulligan after the free one on the bottom, with the
+-- right-click "Put on bottom of library" every drafted card has in play.
+-- (Seen in TTS: a card turned like the deck and put in from above lands on top,
+-- from below on the bottom.)
+
+LOOK_LIFT = 1.5        -- look cards float this high above the felt, locked
+MULLIGAN_CONFIRM = 4   -- seconds the Mulligan button waits for its confirming click
+HAND_SIZE = 7
+FREE_MULLIGANS = 1     -- mulligans per game that cost no card
+
+-- The seat whose look row holds this card, or nil.
+function inLook(obj)
+  if obj == nil then return nil end
+  local guid = obj.getGUID()
+  for color, look in pairs(looks) do
+    if inList(look.cards, guid) then return color end
+  end
+  return nil
+end
+
+-- Card i of the seat's look row: from beside the board toward the owner's left.
+function lookPosition(color, i)
+  local lk = (ZONES and ZONES.look) or { u = LIBRARY_U - 2.9, d = LIBRARY_D - 5.3, step = 2.5 }
+  return seatPoint(color, lk.u - (i - 1) * lk.step, lk.d, L.feltY + LOOK_LIFT)
+end
+
+local function lookButton(card, click, label, z, color, tooltip)
+  card.createButton({
+    click_function = click, function_owner = Global, label = label,
+    position = { x = 0, y = 0.3, z = z },
+    width = 900, height = 200, font_size = 140,
+    color = color, font_color = { 1, 1, 1 }, tooltip = tooltip,
+  })
+end
+
+-- Lays the seat's look row out (again), with each card's buttons and menu.
+function layoutLook(color)
+  local look = looks[color]
+  if look == nil or L == nil then return end
+  local others = othersThan(color)
+  for i, id in ipairs(look.cards) do
+    local card = getObjectFromGUID(id)
+    if card then
+      card.setHiddenFrom(others)
+      card.setInvisibleTo({})
+      card.setLock(true)
+      card.setScale({ x = 1, y = 1, z = 1 })
+      card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
+      card.setPosition(lookPosition(color, i))
+      card.clearButtons()
+      card.clearContextMenu()
+      lookButton(card, "onLookTop", "Top", 1.8, { 0.13, 0.36, 0.62 },
+        "Put it back on top of your library (of several, the last put back is drawn first)")
+      card.addContextMenuItem("Put on top of library", function(c) resolveLook(c, card, "top") end)
+      if look.mode == "scry" then
+        lookButton(card, "onLookBottom", "Bottom", 2.3, { 0.38, 0.25, 0.6 }, "Put it on the bottom of your library")
+        card.addContextMenuItem("Put on bottom of library", function(c) resolveLook(c, card, "bottom") end)
+      else
+        lookButton(card, "onLookGraveyard", "Graveyard", 2.3, { 0.1, 0.42, 0.42 }, "Put it in your graveyard")
+        card.addContextMenuItem("Put in graveyard", function(c) resolveLook(c, card, "graveyard") end)
+      end
+    end
+  end
+end
+
+function layoutLooks()
+  for _, color in ipairs(COLORS) do layoutLook(color) end
+end
+
+-- Takes the next card off the top of the seat's library into its look row.
+function lookAtNext(color, mode)
+  if not playing or L == nil then return end
+  local look = looks[color]
+  if look and look.mode ~= mode then
+    say(color, "Finish your " .. look.mode .. " first.")
+    return
+  end
+  local lib = findLibrary(color)
+  if lib == nil then
+    say(color, "Your library is empty.")
+    return
+  end
+  local n = (look and #look.cards or 0) + 1
+  local card = lib -- a library down to one card is that card
+  if lib.type == "Deck" then
+    card = lib.takeObject({ position = lookPosition(color, n), rotation = { x = 0, y = seatYaw(color), z = 180 },
+                            smooth = false })
+  end
+  if card == nil then return end
+  card.setHiddenFrom(othersThan(color)) -- before layoutLook turns it face-up
+  looks[color] = look or { mode = mode, cards = {} }
+  table.insert(looks[color].cards, card.getGUID())
+  layoutLook(color)
+  broadcastToAll(color .. (mode == "scry" and " scries " or " surveils ") .. #looks[color].cards .. ".",
+    { 0.6, 0.85, 1 })
+end
+
+-- Readies a card to leave the look row or a hand: unlocked, plain, visible.
+local function release(card)
+  card.clearButtons()
+  card.clearContextMenu()
+  card.setHiddenFrom({})
+  card.setInvisibleTo({})
+  card.setLock(false)
+  card.use_gravity = true
+  card.setScale({ x = 1, y = 1, z = 1 })
+end
+
+-- Puts a card face-down on top of (or under) the seat's library.
+function putInLibrary(color, card, onTop)
+  release(card)
+  local down = { x = 0, y = seatYaw(color), z = 180 }
+  card.setRotation(down)
+  local lib = findLibrary(color)
+  local slot = seatPoint(color, LIBRARY_U, LIBRARY_D, L.feltY + 0.5)
+  if lib and lib.type == "Deck" then
+    local p = lib.getPosition()
+    card.setRotation(lib.getRotation())
+    card.setPosition({ x = p.x, y = p.y + (onTop and 2 or -2), z = p.z })
+    lib.putObject(card)
+  elseif lib then
+    -- One card left: stack the two in the slot; the upper one lands on the other and they merge.
+    local under, over = card, lib
+    if onTop then under, over = lib, card end
+    over.setRotation(down)
+    under.setPosition(slot)
+    over.setPosition({ x = slot.x, y = slot.y + 1, z = slot.z })
+  else
+    card.setPosition(slot)
+  end
+end
+
+-- Drops a card face-up on top of the seat's graveyard.
+function putInGraveyard(color, card)
+  release(card)
+  card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
+  local u, d = LIBRARY_U, LIBRARY_D - 5.9
+  if ZONES then u, d = ZONES.board.u, ZONES.slots.graveyard.d end
+  local top = objectAt(color, u, d)
+  card.setPosition(seatPoint(color, u, d, top and top.getPosition().y + 1 or L.feltY + 0.5))
+end
+
+-- A look card's Top / Bottom / Graveyard: only its owner may choose.
+function resolveLook(color, card, where)
+  local owner = inLook(card)
+  if owner == nil then return end
+  if color ~= owner then
+    say(color, "Those are " .. owner .. "'s cards.")
+    return
+  end
+  local look = looks[owner]
+  local guid = card.getGUID()
+  for i, id in ipairs(look.cards) do
+    if id == guid then
+      table.remove(look.cards, i)
+      break
+    end
+  end
+  if where == "graveyard" then putInGraveyard(owner, card) else putInLibrary(owner, card, where == "top") end
+  if #look.cards == 0 then looks[owner] = nil else layoutLook(owner) end
+end
+
+function onLookTop(card, color) resolveLook(color, card, "top") end
+function onLookBottom(card, color) resolveLook(color, card, "bottom") end
+function onLookGraveyard(card, color) resolveLook(color, card, "graveyard") end
+
+function onZoneScry(board, color)
+  local owner = ownsBoard(board, color)
+  if owner then lookAtNext(owner, "scry") end
+end
+
+function onZoneSurveil(board, color)
+  local owner = ownsBoard(board, color)
+  if owner then lookAtNext(owner, "surveil") end
+end
+
+-- The seat that owns a drafted card (as of its last Ready), or nil.
+function cardOwner(obj)
+  local guid = obj.getGUID()
+  for _, color in ipairs(COLORS) do
+    local o = owned[color]
+    if o and (inList(o.main, guid) or inList(o.side, guid)) then return color end
+  end
+  return nil
+end
+
+-- Right-click "Put on bottom of library": into the clicker's library (never the opponent's card).
+function putOnBottom(color, card)
+  if not playing or L == nil or card == nil or not inList(COLORS, color) then return end
+  local owner = cardOwner(card)
+  if owner and owner ~= color then
+    say(color, "That is " .. owner .. "'s card.")
+    return
+  end
+  putInLibrary(color, card, false)
+  local owed = bottomOwed[color] or 0
+  if owed > 0 then
+    bottomOwed[color] = owed - 1
+    if owed > 1 then
+      say(color, (owed - 1) .. " more to put on the bottom.")
+    else
+      broadcastToAll(color .. " keeps " .. (HAND_SIZE - (mulligans[color] or 0) + FREE_MULLIGANS) .. ".",
+        { 0.6, 0.85, 1 })
+    end
+  end
+end
+
+-- London mulligan: the hand (tokens aside) goes back, the library is shuffled and 7 are dealt.
+function mulligan(color)
+  if not playing or L == nil then return end
+  if looks[color] then
+    say(color, "Put the cards you are looking at back first.")
+    return
+  end
+  local lib = findLibrary(color)
+  if lib == nil or lib.type ~= "Deck" then
+    say(color, "Your library is too small to mulligan.")
+    return
+  end
+  local p = lib.getPosition()
+  for _, o in ipairs(Player[color].getHandObjects() or {}) do
+    if isDeckCard(o) then
+      release(o)
+      o.setRotation(lib.getRotation())
+      o.setPosition({ x = p.x, y = p.y + 2, z = p.z })
+      lib.putObject(o)
+    end
+  end
+  lib.shuffle()
+  lib.deal(HAND_SIZE, color)
+  mulligans[color] = (mulligans[color] or 0) + 1
+  local n = mulligans[color]
+  bottomOwed[color] = n - FREE_MULLIGANS
+  if bottomOwed[color] <= 0 then
+    bottomOwed[color] = 0
+    broadcastToAll(color .. " takes a free mulligan and draws a new 7.", { 0.6, 0.85, 1 })
+    return
+  end
+  local owed = bottomOwed[color]
+  broadcastToAll(color .. " mulligans (" .. n .. " times), draws a new 7 and puts " .. owed
+    .. (owed == 1 and " card" or " cards") .. " on the bottom (right-click > Put on bottom of library).",
+    { 0.6, 0.85, 1 })
+end
+
+function onZoneMulligan(board, color)
+  local owner = ownsBoard(board, color)
+  if owner == nil or not playing then return end
+  if not mulliganArmed[owner] then
+    mulliganArmed[owner] = true
+    addBoardButtons(board, owner)
+    Wait.time(function()
+      if not mulliganArmed[owner] then return end
+      mulliganArmed[owner] = nil
+      local b = boards[owner] and getObjectFromGUID(boards[owner]) or nil
+      if b then addBoardButtons(b, owner) end
+    end, MULLIGAN_CONFIRM)
+    return
+  end
+  mulliganArmed[owner] = nil
+  addBoardButtons(board, owner)
+  mulligan(owner)
 end
 
 -- ---------------------------------------------------------------- playmats
@@ -1640,7 +1919,7 @@ function onObjectDrop(color, obj)
 end
 
 -- Cards dropped on each other must not merge into a pile while deck building
--- (the discard pile in the middle still stacks normally).
+-- (the cube in the middle still takes cards back).
 function tryObjectEnterContainer(container, obj)
   if not building or not isDeckCard(obj) then return true end
   -- Booster Tutor picks go back into the cube when Next game starts the deck editor.
@@ -1696,10 +1975,11 @@ function onSave()
   if draft == nil then return "" end
   local botList = {}
   for color in pairs(bots) do table.insert(botList, color) end
-  return JSON.encode({ draft = draft:serialize(), discard = discardGuid, bots = botList,
+  return JSON.encode({ draft = draft:serialize(), bots = botList,
                        ready = ready, piles = piles, playing = playing, firstPlayer = firstPlayer,
                        booster = booster, owned = owned, tutored = tutored, gameNumber = gameNumber,
-                       mats = mats, cubeKey = cubeKey, cubeGuid = cubeGuid, boards = boards })
+                       mats = mats, cubeKey = cubeKey, cubeGuid = cubeGuid, boards = boards,
+                       looks = looks, mulligans = mulligans, bottomOwed = bottomOwed })
 end
 
 function onLoad(saved)
@@ -1712,7 +1992,6 @@ function onLoad(saved)
   end
   if data and data.draft then
     draft = DraftCore.restore(data.draft)
-    discardGuid = data.discard
     bots = {}
     for _, color in ipairs(data.bots or {}) do bots[color] = true end
     ready = data.ready or {}
@@ -1727,6 +2006,9 @@ function onLoad(saved)
     cubeKey = data.cubeKey
     cubeGuid = data.cubeGuid or CUBE_GUID
     boards = data.boards or {}
+    looks = data.looks or {}
+    mulligans = data.mulligans or {}
+    bottomOwed = data.bottomOwed or {}
   else
     draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48 })
   end
@@ -1770,6 +2052,7 @@ function onLoad(saved)
     if playing then
       layoutBooster()
       addPlayMenus()
+      layoutLooks()
       updateUI()
       for _, color in ipairs(COLORS) do frameCamera(color) end
     elseif draft.finished then

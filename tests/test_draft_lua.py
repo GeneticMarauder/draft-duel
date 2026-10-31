@@ -276,7 +276,7 @@ def test_ui_xml_is_well_formed_and_unescaped() -> None:
     xml = (LUA_DIR / "ui.xml").read_text(encoding="utf-8")
     root = ET.fromstring(f"<root>{xml}</root>")
     ids = {el.get("id") for el in root.iter()}
-    assert {"statusText", "startButton", "resetViewButton", "prompt_White", "prompt_Red"} <= ids
+    assert {"statusText", "startButton", "resetViewButton"} <= ids
     assert "&gt;" not in xml and "&lt;" not in xml  # TTS shows entities literally
 
 
@@ -515,11 +515,6 @@ def test_ready_refuses_a_deck_under_40_cards() -> None:
 def test_ready_builds_library_and_sideboard_then_sets_up_the_game() -> None:
     lua = make_lua(with_table=True)
     g = _finished_vs_bot(lua)
-    # TTS can re-create the discard pile under a new GUID; the setup must not depend on it.
-    pile = next(o for o in g.Mock.objects.values() if o.kind == "Deck" and abs(o.pos.z) < 1 and o.guid != "c00001")
-    g.Mock.objects[pile.guid] = None
-    pile.guid = "fresh1"
-    g.Mock.objects["fresh1"] = pile
     white = [o for o in _deck_cards(g) if o.pos.z < 0]
     _move_to_sideboard(lua, g, white[:3])  # deck 45, sideboard 3
     g.onReadyClicked(g.Player.White)
@@ -540,7 +535,7 @@ def test_ready_builds_library_and_sideboard_then_sets_up_the_game() -> None:
     assert abs(g.Mock.objects["c00001"].pos.x) > 20, "cube moved off the play area"
     middle = [o for o in g.Mock.objects.values()
               if o.kind in ("Deck", "Card") and abs(o.pos.z) < 2.5 and abs(o.pos.x) < 12]
-    assert middle == [], "the discard pile (and any stray card) is cleared from the middle"
+    assert middle == [], "nothing is left in the middle"
     assert g.Mock.ui["statusPanel.active"] == "false", "the status bar is gone once the game starts"
     assert g.Mock.ui["deck_White.active"] == "false" and g.Mock.ui["ready_White.active"] == "false"
 
@@ -660,7 +655,7 @@ def test_right_click_creates_the_cards_tokens_beside_it() -> None:
     g = _in_game(lua)
     card = _maker(lua, "m00001", "maker1", x=0, z=-6)
     labels = [item.label for item in _lua_list(card.menu)]
-    assert labels == ["Create Treasure", "Create Goblin Shaman 2/2 Red"]
+    assert labels == ["Create Treasure", "Create Goblin Shaman 2/2 Red", "Put on bottom of library"]
 
     card.menu[1].fn("White")
     g.Mock.flush()
@@ -676,7 +671,7 @@ def test_right_click_creates_the_cards_tokens_beside_it() -> None:
     _assert_no_overlap(g, [card, *treasures])
 
     plain = _maker(lua, "m00002", "not-a-maker", x=12, z=-6)
-    assert len(_lua_list(plain.menu)) == 0, "cards that make no tokens get no menu"
+    assert [item.label for item in _lua_list(plain.menu)] == ["Put on bottom of library"], "no token entries"
 
 
 def _assert_no_overlap(g, objs: list) -> None:
@@ -735,7 +730,7 @@ def test_no_token_menus_before_the_game_and_they_return_after_reload() -> None:
     saved = g.onSave()
     g.onLoad(saved)
     g.Mock.flush()
-    assert [item.label for item in _lua_list(card.menu)] == ["Create The Monarch"]
+    assert [item.label for item in _lua_list(card.menu)] == ["Create The Monarch", "Put on bottom of library"]
 
 
 # ------------------------------------------------------------------ booster tutor
@@ -755,7 +750,7 @@ def test_booster_tutor_opens_15_cards_and_puts_the_choice_in_hand() -> None:
     tutor.name = "Booster Tutor"
     g.onObjectSpawn(tutor)
     g.Mock.flush()
-    assert [item.label for item in _lua_list(tutor.menu)] == ["Open a booster"]
+    assert [item.label for item in _lua_list(tutor.menu)] == ["Open a booster", "Put on bottom of library"]
 
     tutor.menu[1].fn("White")
     g.Mock.flush()
@@ -981,7 +976,7 @@ def test_each_seat_gets_a_zone_board_with_its_library_in_the_slot() -> None:
     assert abs(white.pos.x - zones.BOARD["u"]) < 1e-6 and abs(white.pos.z + zones.BOARD["d"]) < 1e-6
     assert abs(red.pos.x + zones.BOARD["u"]) < 1e-6 and abs(red.pos.z - zones.BOARD["d"]) < 1e-6
     assert white.pos.y > 0.96 + g.MAT_THICKNESS, "on top of a playmat"
-    assert [b.label for b in _lua_list(white.buttons)] == ["Untap", "Draw"]
+    assert [b.label for b in _lua_list(white.buttons)] == ["Untap", "Draw", "Mulligan", "Scry", "Surveil"]
     assert _button(white, "Draw").click_function == "onZoneDraw"
     for color, sign in (("White", 1), ("Red", -1)):
         lib = _library(g, color)
@@ -1037,7 +1032,7 @@ def test_zone_boards_survive_a_reload_and_leave_for_sideboarding() -> None:
     g.onLoad(saved)
     g.Mock.flush()
     boards = _boards(g)
-    assert len(boards) == 2 and all(len(_lua_list(b.buttons)) == 2 for b in boards.values())
+    assert len(boards) == 2 and all(len(_lua_list(b.buttons)) == 5 for b in boards.values())
     g.onZoneDraw(boards["White zones"], "White")
     assert g.Mock.dealt.White == 8, "the reloaded board still draws"
 
@@ -1243,3 +1238,188 @@ def test_game_waits_for_slow_piles_before_dealing() -> None:
     assert {"White library", "Red library"} <= names
     assert g.Mock.dealt.White == 7 and g.Mock.dealt.Red == 7
     assert len(_lua_list(g.Player.Red.getHandObjects())) == 7
+
+
+def test_playmat_lies_on_the_felt_even_if_the_layout_was_measured_from_a_falling_cube() -> None:
+    # Seen in TTS: after switching to the Vintage Cube the layout was measured while the new deck
+    # was still dropping (felt read as 1.72), and the playmat picked next covered the pack and picks.
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.Mock.flush()
+    g.Mock.objects["c00001"].pos.y = 2.77  # the switched-in deck spawns here and is still falling
+    _choose_cube(g, "White", 2)
+    _pick(g, "White", 1)
+    (mat,) = _mats(g)
+    assert abs(mat.pos.y - (0.96 + g.MAT_THICKNESS / 2)) < 0.02, f"mat at y={mat.pos.y:.2f}, above the cards"
+    g.onStartClicked(g.Player.White)
+    g.Mock.flush()
+    cards = _lua_list(g.Mock.packCards(g.Mock.packHolder()))
+    assert all(c.pos.y > mat.pos.y + g.MAT_THICKNESS / 2 for c in cards), "pack cards lie on top of the mat"
+
+
+def test_leftover_pack_cards_vanish() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    _start_vs_bot(lua)
+    first_pack = {c.guid for c in _lua_list(g.Mock.packCards(g.Mock.packHolder()))}
+    _human_picks(lua, 2)  # pack 1 is done once both players have picked twice
+    cards = [o for o in g.Mock.objects.values() if o.kind == "Card"]
+    picks = [o for o in cards if o.scale.x == g.PICK_SCALE]
+    pack = _lua_list(g.Mock.packCards(g.Mock.packHolder()))
+    assert len(cards) == len(picks) + len(pack), "only picks and the current pack are on the table"
+    leftovers = first_pack - {o.guid for o in picks}
+    assert leftovers and all(g.Mock.objects[guid] is None for guid in leftovers), "undrafted cards are gone"
+    middle = [o for o in g.Mock.objects.values() if o.kind in ("Card", "Deck") and abs(o.pos.z) < 2.5 and o.guid != "c00001"]
+    assert middle == [], f"no discard pile in the middle: {[(o.kind, o.guid, o.pos.x, o.pos.z) for o in middle]}"
+    assert '"discard"' not in g.onSave()
+
+    g.autoPick(200)
+    g.Mock.flush()
+    cards = [o for o in g.Mock.objects.values() if o.kind == "Card"]
+    assert len(cards) == 96, "after the draft only the 96 drafted cards are on the table"
+
+
+# ------------------------------------------------------------------ scry, surveil, mulligan
+
+
+def _hand(g, color: str = "White") -> list:
+    return _lua_list(g.Player[color].getHandObjects())
+
+
+def _labels(obj) -> list:
+    return [b.label for b in _lua_list(obj.buttons)]
+
+
+def _said(g, text: str) -> bool:
+    return any(text in m for m in _lua_list(g.Mock.messages))
+
+
+def test_scry_surveil_and_mulligan_sit_right_of_untap_and_draw() -> None:
+    g = _in_game(make_lua(with_table=True))
+    btn = {b.label: b for b in _lua_list(_boards(g)["White zones"].buttons)}
+    for side, beside in (("Scry", "Untap"), ("Surveil", "Draw")):
+        assert btn[side].position.z == btn[beside].position.z, f"{side} on the {beside} row"
+        assert btn[side].position.x > 0 and btn[beside].position.x == 0, "on the owner's right of the board"
+    assert btn["Mulligan"].position.z < btn["Scry"].position.z, "above Scry, away from the sideboard pile"
+    half_w = zones.BUTTONS["scry"]["w"] / 2
+    assert zones.SIDE_U - half_w > zones.BOARD["u"] + zones.BOARD["w"] / 2, "clear of the board"
+    assert zones.SIDE_U + half_w < zones.SIDEBOARD["u"] - 2.2 / 2, "clear of the sideboard pile"
+
+
+def test_scry_shows_the_top_cards_to_their_owner_and_puts_them_on_top_or_bottom() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    white, lib = _boards(g)["White zones"], _library(g)
+    top = _lua_list(lib.cards)[:2]
+    g.onZoneScry(white, "Red")  # not Red's board
+    assert len(lib.cards) == 41
+    g.onZoneScry(white, "White")
+    g.onZoneScry(white, "White")  # each click looks at one more
+    looked = [g.Mock.objects[guid] for guid in top]
+    assert len(lib.cards) == 39 and _said(g, "White scries 2.")
+    for card in looked:
+        assert card.locked and card.rot.z == 0, "face-up for White..."
+        assert "Red" in set(_lua_list(card.hiddenFrom)) and "White" not in set(_lua_list(card.hiddenFrom)), \
+            "...and a card back for Red"
+        assert _labels(card) == ["Top", "Bottom"]
+    assert looked[0].pos.x > looked[1].pos.x, "the row runs toward White's left"
+    assert looked[0].pos.z < 0 and abs(looked[0].pos.z) < zones.BOARD["d"] + zones.BOARD["h"] / 2
+
+    g.onZoneDraw(white, "White")
+    assert g.Mock.dealt.White == 7 and _said(g, "back first"), "no drawing past the cards being looked at"
+    g.onLookTop(looked[0], "Red")
+    assert g.Mock.objects[top[0]] is not None and _said(g, "White's cards")
+
+    g.onLookBottom(looked[0], "White")
+    assert _lua_list(lib.cards)[-1] == top[0] and lib.stored[top[0]].rot.z == 180, "face-down at the bottom"
+    assert abs(looked[1].pos.x - zones.LOOK["u"]) < 1e-6, "the row closes up"
+    g.onLookTop(looked[1], "White")
+    assert _lua_list(lib.cards)[0] == top[1] and len(lib.cards) == 41
+    back = lib.stored[top[1]]
+    assert not back.locked and _labels(back) == [] and _lua_list(back.hiddenFrom) == []
+    g.onZoneDraw(white, "White")
+    assert top[1] in {o.guid for o in _hand(g)}, "the card kept on top is drawn next"
+
+
+def test_surveil_puts_cards_in_the_graveyard_or_back_on_top() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    white, lib = _boards(g)["White zones"], _library(g)
+    first, second = _lua_list(lib.cards)[:2]
+    g.onZoneSurveil(white, "White")
+    g.onZoneSurveil(white, "White")
+    a, b = g.Mock.objects[first], g.Mock.objects[second]
+    assert _labels(a) == ["Top", "Graveyard"] and _said(g, "White surveils 2.")
+    g.onZoneScry(white, "White")
+    assert len(lib.cards) == 39 and _said(g, "Finish your surveil first")
+
+    g.onLookGraveyard(a, "White")
+    assert abs(a.pos.x - zones.BOARD["u"]) < 1e-6 and abs(a.pos.z + zones.SLOTS["graveyard"]["d"]) < 1e-6
+    assert a.rot.z == 0 and not a.locked and _labels(a) == [] and _lua_list(a.hiddenFrom) == []
+    g.onLookGraveyard(b, "White")
+    assert b.pos.y > a.pos.y, "on top of the graveyard"
+    g.onZoneScry(white, "White")  # done surveilling: scrying works again
+    assert len(lib.cards) == 38
+
+
+def test_mulligan_takes_a_second_click_and_only_the_second_costs_a_card() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    white, lib = _boards(g)["White zones"], _library(g)
+    opening = {o.guid for o in _hand(g)}
+    g.onZoneMulligan(white, "White")
+    assert "Confirm?" in _labels(white) and {o.guid for o in _hand(g)} == opening
+    g.Mock.flush()  # the click is forgotten after a few seconds
+    assert "Mulligan" in _labels(white) and lib.shuffled == 1
+
+    g.onZoneMulligan(white, "Red")
+    g.onZoneMulligan(white, "Red")  # not Red's board
+    assert lib.shuffled == 1
+    g.onZoneMulligan(white, "White")
+    g.onZoneMulligan(white, "White")
+    assert lib.shuffled == 2 and g.Mock.dealt.White == 14
+    assert len(_hand(g)) == 7 and len(lib.cards) == 41 and "Mulligan" in _labels(white)
+    assert _said(g, "White takes a free mulligan and draws a new 7.") and not _said(g, "on the bottom")
+
+    g.onZoneMulligan(white, "White")
+    g.onZoneMulligan(white, "White")  # the second costs a card
+    hand = _hand(g)
+    assert len(hand) == 7 and _said(g, "(2 times)") and _said(g, "puts 1 card on the bottom")
+    g.putOnBottom("Red", hand[0])
+    assert _said(g, "That is White's card.") and len(_hand(g)) == 7
+    g.addPlayMenu(hand[0])
+    bottom = next(item for item in _lua_list(hand[0].menu) if item.label == "Put on bottom of library")
+    bottom.fn("White")
+    assert _lua_list(lib.cards)[-1] == hand[0].guid and len(_hand(g)) == 6 and _said(g, "White keeps 6.")
+
+    g.onZoneMulligan(white, "White")
+    g.onZoneMulligan(white, "White")
+    assert len(_hand(g)) == 7 and _said(g, "(3 times)") and _said(g, "puts 2 cards on the bottom")
+
+
+def test_cards_being_scried_survive_a_reload_and_come_back_for_sideboarding() -> None:
+    lua = make_lua(with_table=True)
+    g = _in_game(lua)
+    white = _boards(g)["White zones"]
+    g.onZoneScry(white, "White")
+    g.onZoneScry(white, "White")
+    looked = [o for o in g.Mock.objects.values() if o.kind == "Card" and _labels(o) == ["Top", "Bottom"]]
+    assert len(looked) == 2
+    saved = g.onSave()
+    for o in looked:  # TTS keeps neither buttons nor visibility
+        o.buttons, o.hiddenFrom, o.menu = lua.table(), lua.table(), lua.table()
+    g.onLoad(saved)
+    g.Mock.flush()
+    for o in looked:
+        assert _labels(o) == ["Top", "Bottom"] and "Red" in set(_lua_list(o.hiddenFrom))
+        assert [item.label for item in _lua_list(o.menu)] == ["Put on top of library", "Put on bottom of library"]
+
+    _click_next_game(g)
+    mine = [o for o in _deck_cards(g) if o.pos.z < 0]
+    assert len(mine) == 48 and all(not o.locked and _labels(o) == [] for o in mine)
+    g.onReadyClicked(g.Player.White)
+    g.Mock.flush()
+    g.onZoneScry(_boards(g)["White zones"], "White")
+    assert _said(g, "White scries 1."), "a new game starts with nothing being looked at"

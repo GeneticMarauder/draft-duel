@@ -91,7 +91,7 @@ pick one at the table before the draft. Two halves:
   generic/library user agents, **including the one TTS itself sends**.
 - `sheets.py` — 10x7 JPEG deck sheets (69 cards each; last slot is TTS's hidden-card slot),
   409x570 per card so sheets stay ≤4096 px; content-hashed filenames to defeat TTS's URL cache.
-- `tts_save.py` — save JSON: `Table_RPG`, hand zones (fixed GUIDs), the first cube's deck on the table
+- `tts_save.py` — save JSON: `Table_Custom` with our table image (`Table_RPG` without one), hand zones (fixed GUIDs), the first cube's deck on the table
   (`c00001`; DFC backs as card state 2 on sheets ≥ 51), Global Lua + XML UI. `build_save(cubes, …)`:
   cards take the front sheets cube by cube, then basics; card GUIDs are offset per cube so they never
   collide; each deck's `CustomDeck` lists only its own sheets. Every cube's deck is also embedded in the
@@ -113,19 +113,39 @@ pick one at the table before the draft. Two halves:
   `CustomUIAssets` (`matthumb<i>`) used by the pickers that `mat_pickers` writes into `<!--MAT_PICKERS-->`.
 - `zones.py` — the zone board (borrowed from the MTG EDH table): `LAYOUT` (owner-relative `u` across,
   `d` from the middle line) holds the board, its Library / Graveyard / Exile slots, the Draw / Untap
-  button strips, the sideboard spot and the dice; `render_board` draws the image from it
+  button strips, the Scry / Surveil / Mulligan buttons beside it (`SIDE_U`), the scry look row (`LOOK`),
+  the sideboard spot and the dice; `render_board` draws the image from it
   (`sheets/zones-<hash>.jpg`) and the same numbers reach the script as `ZONES_JSON` (with the image `url`).
+- `tabletop.py` — the table top, a 1v1 take on the MTG EDH table: grey wood grain, one wide dark
+  mat per player (`PANEL_W` 62 x 16, the 44-wide playmat lies over its middle) in a light wood frame with
+  a plain gold trim (no title or logo), and the zone board's art painted where the board lies in a game.
+  `TABLE_W` x `TABLE_H` (88.4 x 52.2) is the area TTS's custom rectangle table stretches the image over
+  (measured in TTS); Red's half is White's panel turned 180 degrees. Saved as `sheets/table-<hash>.jpg`.
+- `props.py` — table props from the MTG EDH mod (Workshop 2425949312), at their EDH spots on the
+  custom table's wooden ends: mana counters, keyword markers and counter-token bags (left), d20/d10/d6
+  and coin bags, the emblem deck, an extra-cards deck (Monarch, Day // Night, Initiative…) and the
+  dungeon cards (right), black-hole bins in the corners. Other people's Workshop objects, so not in
+  this repo: `load_props(workshop_file())` reads `PROP_GUIDS` from the player's downloaded EDH save each
+  build (none if absent; `KeyError` if the mod dropped one), locks them, and `merge` re-GUIDs any
+  collision. Their card and token images were on Scryfall (the retired c1 host, or cards.scryfall.io,
+  which refuses TTS): `card_faces` / `token_images` list them on the current host, the build downloads
+  them, renders cards onto `props??` sheets (`PROP_SHEET_BASE` 71+, card states such as Night included)
+  and the custom-token art into `proptoken??` PNGs (PNG: a token's shape is its transparency), and
+  `rehost` / `rehost_tokens` repoint the objects. Left out: importers / web-fetching tools and EDH-only
+  counters. Our scripts only act on cards, so the props never interfere.
 - `live.py` — `uv run draft-duel-live exec "<lua>"` / `load`: tests in the running game through TTS's
   external-editor API (localhost:39999/39998), no screen needed (see verified-behaviours).
 - `cli.py` — orchestrates; writes `dist/Draft Duel.json`, copies into the TTS Saves
-  folder when it exists, `--push` commits `sheets/` so raw.githubusercontent.com URLs resolve.
+  folder when it exists, `--push` commits `sheets/` so raw.githubusercontent.com URLs resolve. Without
+  `--push` the build warns about every `sheets/` image `origin/<branch>` lacks (`unpublished_sheets`):
+  TTS shows a missing sheet as blank white cards ("unsupported format: UNKNOWN" in the log).
 - Card images are served from this public repo (`sheets/`). TTS cannot load Scryfall images directly.
 
 **Lua (in-game Global script)** — `src/draft_duel/lua/`
 - `draft_core.lua` — pure rules engine (no TTS API). Per pack, starter S / other O:
   S picks, O picks, O picks, S picks — each from 5 cards (`PACK_SIZE`, topped up from the cube), then
-  the 4 leftovers are discarded face-up. Starter alternates; 24 packs → 48 picks each (192 cards dealt).
-- `table.lua` — TTS adapter. Per side, from the middle out: cube + discard strip, the pack row
+  the 4 leftovers are discarded (the table destroys them: undrafted cards simply vanish). Starter alternates; 24 packs → 48 picks each (192 cards dealt).
+- `table.lua` — TTS adapter. Per side, from the middle out: the cube in the middle strip, the pack row
   (current pack: 5 cards at 1.5x, side by side, locked, with an on-card **Draft** button and a
   right-click "Draft this card"), then the 12x4 pick grid (0.65x). Bots draft for seats empty at
   Start Draft. State persists via `onSave`/`onLoad` (buttons, menus and visibility are reapplied).
@@ -145,7 +165,7 @@ pick one at the table before the draft. Two halves:
   merge by themselves as they land, so `settlePile` finds the pile by position — `objectAt` — and waits
   until it holds every card before naming it and recording `piles`); `startWhenPilesSettle` waits for
   every library, then `startGame` — when every seat is
-  ready, `startGame` removes the land bags, moves the cube and discard pile to the table edges,
+  ready, `startGame` removes the land bags, moves the cube (and any discard pile from an older save) to the table edges,
   shuffles, deals 7 to each hand and spawns 20-life counters. `ready`, `piles`, `playing` persist.
   **Tokens** (only while `playing`): a card whose GMNotes id is in `TOKENS_JSON.makers` gets a
   right-click "Create <token>" per token; the token spawns in the nearest free card-sized spot beside
@@ -163,7 +183,7 @@ pick one at the table before the draft. Two halves:
   back face-down into the cube (`returnToCube` unlocks the locked cube around `putObject`), which is
   shuffled. One booster open at a time; `booster` persists. The taken card's GUID goes in `tutored`:
   it only lasts one game.
-  **Next game** (top-centre button while `playing`; second click within 4 s confirms) → `nextGame`:
+  **Next game** (button in TTS's toolbar row, just left of the player list, while `playing`; second click within 4 s confirms) → `nextGame`:
   piles holding owned cards are emptied (all but the last card taken out; the last stays as a plain
   card), then every card is routed by GUID — `owned[color].main/side` (recorded at `readyUp`) back to
   that player's deck/sideboard area, `tutored` back into the cube; tokens and "<color> life" counters
@@ -189,6 +209,19 @@ pick one at the table before the draft. Two halves:
   estimate). `boards` persists; `refreshBoards` re-adds buttons after a reload; `nextGame` removes the
   boards (the sideboard columns need that edge); `spotIsFree` keeps tokens off them. `placeDice` (onLoad)
   spawns a d20 and two d6 per seat, tinted its color, in its left corner, once (GMNotes `die:<color>:<i>`).
+  **Scry / Surveil / Mulligan** (§ scry, surveil, mulligan): three more board buttons just right of the
+  board (`zones.BUTTONS` entries with a `u`; the image paints no strip for them; `BUTTON_X_SIGN` maps
+  owner-right to a button's local x). Scry / Surveil (`lookAtNext`) take the library's top card into the
+  owner's look row (`zones.LOOK`, toward their left of the board): locked, face-up, `setHiddenFrom` the
+  others; each click adds the next card. Each card has **Top** and **Bottom** (scry) or **Graveyard**
+  (surveil) buttons and the same right-click items (`resolveLook`, owner only); `putInLibrary` returns a
+  card with `putObject` from above (top) or below (bottom), see verified-behaviours; `putInGraveyard` drops
+  it face-up on the graveyard slot. Draw and Mulligan wait until the row is empty. **Mulligan** (London,
+  click twice: the label shows "Confirm?" for `MULLIGAN_CONFIRM` s) puts the hand's drafted cards back,
+  shuffles and deals 7. The first mulligan of a game is free (`FREE_MULLIGANS`); each later one asks for
+  one more card on the bottom (2nd: 1, 3rd: 2…), using the right-click
+  "Put on bottom of library" that `addPlayMenu` now gives every drafted card in play (`putOnBottom`;
+  not the opponent's card). `looks`, `mulligans`, `bottomOwed` persist; a new game clears them.
   **Cubes** (§ cubes): `CUBES` comes from `CUBES_JSON`; `cubeKey` (which cube) and `cubeGuid` (its deck —
   `c00001` only until a switch) persist; every former `CUBE_GUID` check uses `cubeGuid`. Until the draft
   starts, each seat's "Cube: <name>" button (bottom right, above the playmat button) opens its picker
@@ -198,7 +231,8 @@ pick one at the table before the draft. Two halves:
   draft starts or when the save has one cube. The status bar and the Start Draft broadcast name the cube.
   (Not yet seen in TTS: `spawnObjectJSON` of a full cube deck.)
 - `ui.xml` — status bar (hidden once the game starts), Start Draft button, Reset view, Next game,
-  per-seat playmat and cube buttons (pickers are generated), per-seat "your pick" prompts.
+  per-seat playmat and cube buttons (pickers are generated). No "your pick" prompt: the pack laid out
+  in front of the picker, with its Draft buttons, says it already.
 
 **Privacy is per card, not hidden zones** (re-applied on every pickup/drop/state change via `rehide`, plus `!hide`). Pack cards use `setHiddenFrom(others)` (opponent sees
 backs); picks use `setInvisibleTo(others)`. Hidden zones were dropped: TTS draws them as solid

@@ -46,3 +46,14 @@ def save_hashed(img: Image.Image, out_dir: Path, prefix: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / name).write_bytes(data)
     return name
+
+
+def save_hashed_png(img: Image.Image, out_dir: Path, prefix: str) -> str:
+    """Like ``save_hashed`` but PNG, for images whose transparency matters (custom tokens' shapes)."""
+    buf = io.BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    data = buf.getvalue()
+    name = f"{prefix}-{hashlib.sha1(data).hexdigest()[:12]}.png"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / name).write_bytes(data)
+    return name
