@@ -1692,6 +1692,9 @@ local function matUrl(name)
   return nil
 end
 
+MAT_W = 44             -- playmat width in table units (follows the image, see above)
+MAT_LOAD_FRAMES = 600  -- give up waiting for a mat's image after this many frames
+
 -- Locks the mat in place over the owner's battlefield.
 local function fitPlaymat(tile, color)
   if tile == nil or L == nil then return end
@@ -1701,13 +1704,74 @@ local function fitPlaymat(tile, color)
   tile.interactable = false
 end
 
--- Replaces a seat's playmat (name nil or unknown: no playmat).
+-- Seen in TTS: a custom tile has no size and no collider (bounds 0, loading_custom
+-- true) until its image has loaded, 20-30 frames after the spawn. Runs fn then.
+local function whenMatLoaded(guid, fn, frames)
+  frames = frames or 0
+  local tile = getObjectFromGUID(guid)
+  if tile == nil then return end -- destroyed (replaced) meanwhile
+  if tile.loading_custom and frames < MAT_LOAD_FRAMES then
+    Wait.frames(function() whenMatLoaded(guid, fn, frames + 1) end, 1)
+    return
+  end
+  fn()
+end
+
+-- Bottom of an object's bounds (the mock's bounds have no centre: use the position).
+local function bottomOf(o)
+  local p = o.getPosition()
+  local ok, b = pcall(function() return o.getBounds() end)
+  if not ok or b == nil or b.size == nil then return p.y end
+  return (b.center and b.center.y or p.y) - b.size.y / 2
+end
+
+local LIFTED_TYPES = { Card = true, Deck = true, Dice = true, Counter = true, Tile = true, Token = true, Generic = true }
+
+-- Puts everything lying inside the seat's playmat back on top of it. A mat
+-- spawned where cards already lie (picked after them, or while a switched-out
+-- mat's cards had dropped to the felt) covered every one of them (seen in TTS).
+function liftOntoPlaymat(color)
+  local m = mats[color]
+  local tile = m and getObjectFromGUID(m.guid) or nil
+  if tile == nil or L == nil then return end
+  -- Seen in TTS: a tile's bounds run from its position up by its thickness.
+  local top = tile.getPosition().y + MAT_THICKNESS
+  local sign = sideSign(color)
+  for _, o in ipairs(getObjects()) do
+    local p = o.getPosition()
+    local d = sign * p.z
+    if LIFTED_TYPES[o.type] and o.getGUID() ~= m.guid and not (o.getName() or ""):find("playmat")
+        and math.abs(p.x) <= MAT_W / 2 and math.abs(d - MAT_Z) <= MAT_D / 2 then
+      local bottom = bottomOf(o)
+      if bottom < top - 0.005 then
+        o.setPosition({ x = p.x, y = p.y + (top + 0.02 - bottom), z = p.z })
+        o.setVelocity({ x = 0, y = 0, z = 0 })
+      end
+    end
+  end
+end
+
+-- Replaces a seat's playmat (name nil or unknown: no playmat). The old mat
+-- stays until the new one has loaded, so cards on it never drop to the felt.
+local replacedMats = {} -- color -> { guid, ... } of mats waiting for their replacement to load
+
+local function clearReplacedMats(color)
+  for _, guid in ipairs(replacedMats[color] or {}) do
+    local o = getObjectFromGUID(guid)
+    if o then o.destruct() end
+  end
+  replacedMats[color] = {}
+end
+
 function setPlaymat(color, name)
-  local old = mats[color] and getObjectFromGUID(mats[color].guid) or nil
-  if old then old.destruct() end
+  replacedMats[color] = replacedMats[color] or {}
+  if mats[color] then table.insert(replacedMats[color], mats[color].guid) end
   mats[color] = nil
   local url = matUrl(name)
-  if url == nil or L == nil then return end
+  if url == nil or L == nil then
+    clearReplacedMats(color)
+    return
+  end
   -- spawnObject + setCustomObject in the same frame is TTS's way to make a
   -- custom tile (raw spawnObjectData without every field fails to load).
   local tile = spawnObject({
@@ -1716,15 +1780,23 @@ function setPlaymat(color, name)
     rotation = { x = 0, y = seatYaw(color), z = 0 },
     scale = { x = MAT_SCALE, y = 1, z = MAT_SCALE },
     sound = false,
-    callback_function = function(o)
-      o.setName(color .. " playmat: " .. name)
-      Wait.frames(function() fitPlaymat(o, color) end, 2)
-    end,
+    callback_function = function(o) o.setName(color .. " playmat: " .. name) end,
   })
-  if tile == nil then return end
+  if tile == nil then
+    clearReplacedMats(color)
+    return
+  end
   tile.setCustomObject({ image = url, type = 0, thickness = MAT_THICKNESS, stackable = false, stretch = true })
   tile.setLock(true)
-  mats[color] = { name = name, guid = tile.getGUID() }
+  local guid = tile.getGUID()
+  mats[color] = { name = name, guid = guid }
+  whenMatLoaded(guid, function()
+    -- Picked over again while loading: the newer mat clears this one when it loads.
+    if mats[color] == nil or mats[color].guid ~= guid then return end
+    clearReplacedMats(color)
+    fitPlaymat(tile, color)
+    liftOntoPlaymat(color)
+  end)
 end
 
 -- Labels each seat's button with its current playmat (also after a reload).
@@ -2029,7 +2101,13 @@ function onLoad(saved)
     -- Playmats are saved with the table; interactable is not, so reapply it.
     for color, m in pairs(mats) do
       local tile = getObjectFromGUID(m.guid)
-      if tile then fitPlaymat(tile, color) else mats[color] = nil end
+      if tile then
+        fitPlaymat(tile, color)
+        -- Also heals a save made while a mat covered the cards.
+        whenMatLoaded(m.guid, function() liftOntoPlaymat(color) end)
+      else
+        mats[color] = nil
+      end
     end
     updateMatButtons()
     refreshBoards()

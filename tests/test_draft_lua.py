@@ -1259,6 +1259,60 @@ def test_playmat_lies_on_the_felt_even_if_the_layout_was_measured_from_a_falling
     assert all(c.pos.y > mat.pos.y + g.MAT_THICKNESS / 2 for c in cards), "pack cards lie on top of the mat"
 
 
+def test_a_new_or_switched_playmat_lifts_the_cards_it_would_cover() -> None:
+    # Seen in TTS: a mat spawned where cards already lay (picked before the mat, or dropped to the
+    # felt while a switched-out mat was destroyed) covered every one of them.
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.Mock.flush()
+
+    def card(guid: str, z: float):
+        c = g.Mock.newObject(guid, "Card")
+        c.setPosition(lua.table_from({"x": 3, "y": 0.96 + 0.1, "z": z}))  # resting on the felt
+        return c
+
+    def bottom(c) -> float:
+        return c.pos.y - c.getBounds().size.y / 2
+
+    mine, theirs, in_hand = card("k00001", -9.8), card("k00002", 9.8), card("k00003", -20)
+    _pick(g, "White", 1)
+    (mat,) = _mats(g)
+    top = mat.pos.y + g.MAT_THICKNESS
+    assert bottom(mine) >= top, "the picked mat lifts White's card onto it"
+    assert abs(theirs.pos.y - 1.06) < 1e-9 and abs(in_hand.pos.y - 1.06) < 1e-9, "only what the mat covers"
+
+    g.onMatPick(g.Player.White, "-1", "matPick_White_2")  # switch to Aurora
+    assert len(_mats(g)) == 2, "the old mat stays until the new one has loaded"
+    g.Mock.flush()
+    (mat,) = _mats(g)
+    assert mat.name == "White playmat: Aurora" and bottom(mine) >= top
+
+    mine.pos.y = 1.06  # a save made by the old script, with the card under the mat
+    saved = g.onSave()
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert bottom(mine) >= top, "a reload puts buried cards back on the mat"
+
+
+def test_switching_playmats_quickly_leaves_only_the_last_one() -> None:
+    lua = make_lua(with_table=True)
+    g = lua.globals()
+    g.Mock.setup(515)
+    g.onLoad("")
+    g.Mock.flush()
+    _pick(g, "White", 1)
+    for index in (2, 1, 2):
+        g.onMatPick(g.Player.White, "-1", f"matPick_White_{index}")  # each before the last one loaded
+    g.Mock.flush()
+    assert [m.name for m in _mats(g)] == ["White playmat: Aurora"]
+    g.onMatPick(g.Player.White, "-1", "matPick_White_1")
+    g.onMatPick(g.Player.White, "-1", "matPick_White_0")  # None while Volcano is still loading
+    g.Mock.flush()
+    assert _mats(g) == []
+
+
 def test_leftover_pack_cards_vanish() -> None:
     lua = make_lua(with_table=True)
     g = lua.globals()

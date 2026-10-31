@@ -15,6 +15,9 @@ one line, what you saw, where it matters, and the date if you know it.
   every card. So `computeLayout` no longer measures the felt: it is the constant `FELT_Y` 0.96.
 - A `Custom_Tile`'s bounds run from its position up by its thickness (a mat at y=1.01, thickness 0.1,
   has its top at 1.11): cards floating with gravity off must sit above that (2026-10-29).
+- A freshly spawned `Custom_Tile` has `loading_custom` true and bounds of size 0 (no collider) until its
+  image loads, 20-30 frames later. A playmat spawned where cards already lay on the felt covered them:
+  something has to lift them onto it once it has loaded (2026-10-30).
 - A `Custom_Tile` is 2 units deep at scale 1; its width follows the image's aspect ratio
   (a 2048 x 744 image at scale 8 makes a 44 x 16 mat).
 

@@ -38,7 +38,12 @@ function Mock.newObject(guid, kind)
   o.setAngularVelocity = function(v) o.angularVelocity = vec(v) end
   o.getBounds = function() return { size = { x = 2.2, y = 0.2, z = 3.1 } } end
   o.addContextMenuItem = function(label, fn) table.insert(o.menu, { label = label, fn = fn }) end
-  o.setCustomObject = function(t) o.custom = t end
+  -- Seen in TTS: a custom object's image takes 20-30 frames to load (loading_custom meanwhile).
+  o.setCustomObject = function(t)
+    o.custom = t
+    o.loading_custom = true
+    Wait.frames(function() o.loading_custom = false end, Mock.customLoadFrames or 25)
+  end
   o.clearContextMenu = function() o.menu = {} end
   Mock.objects[guid] = o
   return o

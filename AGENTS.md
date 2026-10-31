@@ -197,8 +197,11 @@ pick one at the table before the draft. Two halves:
   (TTS's Dropdown opened off-screen and can't be re-selected after a reload, hence the picker): a `Custom_Tile` (spawnObject + `setCustomObject` in the same frame; raw
   `spawnObjectData` tile data failed to load in TTS) at scale `MAT_SCALE` (a tile is 2 units deep at
   scale 1 and its width follows the image), locked and non-interactable, centred `MAT_Z` from the middle.
-  `mats` persists; `onLoad` re-locks them (interactable is not saved) and `updateMatButtons` relabels
-  the buttons. Next game leaves them alone.
+  A replaced mat stays (`replacedMats`) until the new one's image has loaded (`whenMatLoaded`), so cards on
+  it never drop to the felt; then `liftOntoPlaymat` raises every card/deck/die/counter whose bottom is
+  inside the mat's footprint and below its top (a mat spawned where cards lay used to cover them all).
+  `mats` persists; `onLoad` re-locks them (interactable is not saved), lifts anything buried, and
+  `updateMatButtons` relabels the buttons. Next game leaves them alone.
   **Zones** (§ zones, from `ZONES_JSON`; empty header = no board, old pile spots): `readyUp` spawns the
   seat's zone board (`placeBoard`: a locked `Custom_Tile` on top of the playmat at the owner's right edge,
   scale `h/2`) before gathering the library into its Library slot; the sideboard pile goes off the mat
