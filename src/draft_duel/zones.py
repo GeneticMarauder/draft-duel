@@ -55,6 +55,33 @@ DICE = [
 LAYOUT: dict[str, Any] = {"board": BOARD, "slots": SLOTS, "buttons": BUTTONS,
                           "sideboard": SIDEBOARD, "dice": DICE, "look": LOOK}
 
+MAT_W = 44.0       # the playmat LAYOUT is drawn for
+BELOW_MAT_D = 19.6  # between a mat's hand-side edge (d 17.5) and a four-player hand zone (d 21.5+)
+
+
+def layout_for(mat_w: float) -> dict[str, Any]:
+    """The layout for a playmat ``mat_w`` wide: ``LAYOUT`` with the board at that mat's right edge.
+
+    A narrower mat (the four-player table's 38) leaves no room beside it, so the
+    sideboard pile and the dice go just past its hand-side edge instead: the
+    pile under the board, the dice in the owner's left corner.
+    """
+    if mat_w == MAT_W:
+        return LAYOUT
+    shift = (mat_w - MAT_W) / 2
+    board = {**BOARD, "u": BOARD["u"] + shift}
+    left = -mat_w / 2
+    return {
+        "board": board,
+        "slots": SLOTS,
+        "buttons": {k: ({**b, "u": b["u"] + shift} if "u" in b else b) for k, b in BUTTONS.items()},
+        "sideboard": {"u": board["u"], "d": BELOW_MAT_D},
+        "dice": [{"type": "Die_20", "u": left + 1.5, "d": BELOW_MAT_D},
+                 {"type": "Die_6", "u": left + 3.2, "d": BELOW_MAT_D},
+                 {"type": "Die_6", "u": left + 4.6, "d": BELOW_MAT_D}],
+        "look": {**LOOK, "u": LOOK["u"] + shift},
+    }
+
 BOARD_SIZE = (round(BOARD["w"] * PX_PER_UNIT), round(BOARD["h"] * PX_PER_UNIT))
 
 BACKGROUND = (24, 28, 34)

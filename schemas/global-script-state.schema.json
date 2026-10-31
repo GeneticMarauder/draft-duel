@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["draft"],
   "properties": {
-    "draft": { "type": "object", "description": "DraftCore:serialize() — pack, picks per color, starter, counters." },
+    "draft": { "type": "object", "description": "DraftCore:serialize() — pack, picks per color, starter, counters; in the four-player save QueueDraft:serialize() (kind = \"queue\") — packs [{ id, opener, round, dir, cards, filled, taken }], queues (color -> [pack id]), picks, opened, turns (color -> [turns per round]), nextId." },
     "bots": { "type": "array", "items": { "type": "string" }, "description": "Seat colors a bot drafts for." },
     "ready": { "type": "object", "additionalProperties": { "type": "boolean" }, "description": "color -> pressed Ready to play." },
     "piles": { "type": "object", "description": "color -> { library = guid, sideboard = guid }." },

@@ -1,8 +1,10 @@
-"""`uv run draft-duel` — build the card sheets and the Draft Duel Tabletop Simulator save.
+"""`uv run draft-duel` — build the card sheets and the Draft Duel Tabletop Simulator saves.
 
 Steps: each cube's list (CubeCobra, or MTGO's Vintage Cube page) -> Scryfall data
 and images -> deck sheets in ``sheets/`` -> save JSON in ``dist/`` (and in the
 Tabletop Simulator Saves folder if it exists). Players pick the cube in game.
+Two saves share the sheets: "Draft Duel" (1v1) and "Draft Duel 4P" (the
+four-player queue draft, with its own table image and narrower playmats).
 With ``--push`` the sheets are committed and pushed so the save's image URLs resolve.
 """
 
@@ -13,6 +15,7 @@ import json
 import re
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
@@ -21,6 +24,7 @@ from draft_duel import playmats, props, tabletop, zones
 from draft_duel import sheets as sh
 from draft_duel.cubes import CUBES, DEFAULT_CUBES, load_cube, resolve
 from draft_duel.models import Card, Cube, Sheet, Token
+from draft_duel.seats import DUEL, FOUR
 from draft_duel.sources import (
     CARD_SWAPS,
     MAGIC_CARD_BACK,
@@ -35,7 +39,6 @@ from draft_duel.tokens import load_tokens, match_makers, token_faces
 from draft_duel.tts_save import (
     BACK_SHEET_BASE,
     FRONT_SHEET_BASE,
-    SAVE_NAME,
     TOKEN_SHEET_BASE,
     build_save,
     deck_entry,
@@ -74,12 +77,24 @@ def tts_saves_dirs() -> list[Path]:
             if (d / "My Games" / "Tabletop Simulator").is_dir()]
 
 
+@dataclass
+class Rendered:
+    """Everything ``render_all`` drew, as the saves need it (URLs on the repo)."""
+
+    sheets: dict[int, Sheet]
+    back_url: str
+    mats: list[dict[str, str]]          # 1v1 playmats: name, url, thumb
+    mats_4p: list[dict[str, str]]       # the same mats for the four-player table's narrower quarters
+    zones_url: str
+    table_url: str
+    table_4p_url: str
+    prop_token_urls: dict[str, str]
+
+
 def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: str,
                tokens: list[Token] | None = None, prop_faces: list[str] | None = None,
-               prop_tokens: list[str] | None = None,
-               ) -> tuple[dict[int, Sheet], str, list[dict[str, str]], str, str, dict[str, str]]:
-    """Render card, token, playmat, zone-board, table and prop images; return sheets by id, the card back
-    URL, the mats, the zone board's URL, the table's URL and our URL for each prop token image."""
+               prop_tokens: list[str] | None = None) -> Rendered:
+    """Render card, token, playmat, zone-board, table and prop images for both saves."""
     SHEETS_DIR.mkdir(exist_ok=True)
     sheets: dict[int, Sheet] = {}
     written: set[str] = set()
@@ -112,16 +127,21 @@ def render_all(cards: list[Card], images: dict[str, Path], slug: str, branch: st
     for name, filename, thumb in playmats.render_all(SHEETS_DIR, PLAYMATS_DIR):
         written.update((filename, thumb))
         mats.append({"name": name, "url": raw_url(slug, branch, filename), "thumb": raw_url(slug, branch, thumb)})
+    mats_4p = []
+    for mat, (name, filename) in zip(mats, playmats.render_narrow(SHEETS_DIR, FOUR.mat_w, PLAYMATS_DIR), strict=True):
+        written.add(filename)
+        mats_4p.append({**mat, "name": name, "url": raw_url(slug, branch, filename)})
 
     zones_name = zones.render_all(SHEETS_DIR)
-    table_name = tabletop.render_all(SHEETS_DIR)
-    written.update((zones_name, table_name))
+    table_name = tabletop.render_all(SHEETS_DIR, DUEL)
+    table_4p_name = tabletop.render_all(SHEETS_DIR, FOUR)
+    written.update((zones_name, table_name, table_4p_name))
 
     for old in [*SHEETS_DIR.glob("*.jpg"), *SHEETS_DIR.glob("*.png")]:
         if old.name not in written:
             old.unlink()
-    return (sheets, raw_url(slug, branch, back_name), mats, raw_url(slug, branch, zones_name),
-            raw_url(slug, branch, table_name), prop_token_urls)
+    return Rendered(sheets, raw_url(slug, branch, back_name), mats, mats_4p, raw_url(slug, branch, zones_name),
+                    raw_url(slug, branch, table_name), raw_url(slug, branch, table_4p_name), prop_token_urls)
 
 
 def push_sheets(cube: str) -> None:
@@ -199,31 +219,33 @@ def main(argv: list[str] | None = None) -> None:
                 print(f"  images {n}/{len(urls)}")
 
     # Cubes' cards fill the front sheets in order, then the basics (see tts_save.build_save).
-    sheets, back_url, mats, zones_url, table_url, prop_token_urls = render_all(
-        everything, images, slug, args.branch, tokens, prop_faces, prop_tokens)
+    r = render_all(everything, images, slug, args.branch, tokens, prop_faces, prop_tokens)
+    sheets, back_url = r.sheets, r.back_url
     dfc = sum(1 for c in cards if c.back)
-    print(f"Rendered {len(sheets)} sheets ({dfc} double-faced cards) and {len(mats)} playmats.")
+    print(f"Rendered {len(sheets)} sheets ({dfc} double-faced cards) and {len(r.mats)} playmats.")
 
     if table_props:
         prop_sheets = {sid: deck_entry(sheet, back_url) for sid, sheet in sheets.items() if sid >= props.PROP_SHEET_BASE}
         table_props = props.rehost(table_props, prop_faces, prop_sheets, sh.PER_SHEET)
-        table_props = props.rehost_tokens(table_props, prop_token_urls)
+        table_props = props.rehost_tokens(table_props, r.prop_token_urls)
         print(f"Added {len(table_props)} table props from the MTG EDH mod ({len(prop_faces)} card and "
               f"{len(prop_tokens)} token images rehosted).")
     else:
         print(f"Table props skipped: subscribe to the MTG EDH table (Workshop {props.WORKSHOP_ID}) and load it once.")
-    save = build_save(cubes, sheets, back_url, basics, tokens, makers, mats, zones_url, table_url, table_props)
     DIST_DIR.mkdir(exist_ok=True)
-    out = DIST_DIR / f"{SAVE_NAME}.json"
-    out.write_text(json.dumps(save, indent=1, ensure_ascii=False), encoding="utf-8")
-    print(f"Wrote {out}")
-    for saves in tts_saves_dirs():
-        saves.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(out, saves / out.name)
-        print(f"Installed to {saves / out.name}")
+    for table, mats, table_url in ((DUEL, r.mats, r.table_url), (FOUR, r.mats_4p, r.table_4p_url)):
+        save = build_save(cubes, sheets, back_url, basics, tokens, makers, mats, r.zones_url, table_url,
+                          table_props, table)
+        out = DIST_DIR / f"{table.name}.json"
+        out.write_text(json.dumps(save, indent=1, ensure_ascii=False), encoding="utf-8")
+        print(f"Wrote {out}")
+        for saves in tts_saves_dirs():
+            saves.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(out, saves / out.name)
+            print(f"Installed to {saves / out.name}")
     if not tts_saves_dirs():
         print("Tabletop Simulator's Saves folder was not found; launch the game once, then rerun "
-              f"or copy {out.name} into Documents/My Games/Tabletop Simulator/Saves.")
+              f"or copy the saves in {DIST_DIR} into Documents/My Games/Tabletop Simulator/Saves.")
 
     if args.push:
         push_sheets(" + ".join(c.name for c in cubes))

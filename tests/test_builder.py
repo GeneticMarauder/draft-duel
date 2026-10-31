@@ -527,3 +527,97 @@ def test_build_names_sheets_the_branch_lacks(tmp_path: Path, monkeypatch) -> Non
 
     monkeypatch.setattr(cli, "_git", no_branch)
     assert len(cli.unpublished_sheets("gone", tmp_path)) == 3, "an unknown branch has none of them"
+
+
+# ------------------------------------------------------------------ four players
+
+
+def test_four_player_save_seats_four_and_runs_the_queue_draft() -> None:
+    import json
+    import xml.etree.ElementTree as ET
+
+    from draft_duel import zones
+    from draft_duel.seats import FOUR
+
+    cards = [Card("a", Face("Bolt", "", "u/a"))]
+    fronts, _ = assign_slots(cards)
+    sheets = {s.sheet_id: Sheet(s.sheet_id, "s.jpg", "https://h/s.jpg") for s in fronts}
+    mats = [{"name": "Volcano", "url": "https://h/v38.jpg", "thumb": "https://h/vt.jpg"}]
+    save = build_save([Cube("lsv", "LSV Cube", cards), Cube("vintage", "Vintage", cards)], sheets,
+                      "https://h/back.jpg", mats=mats, zones_url="https://h/z.jpg", table=FOUR)
+    assert save["SaveName"] == "Draft Duel 4P" and "queue draft" in save["Note"]
+
+    hands = [o for o in save["ObjectStates"] if o["Name"] == "HandTrigger"]
+    assert [h["FogColor"] for h in hands] == ["White", "Red", "Green", "Blue"]
+    for h, seat in zip(hands, FOUR.seats, strict=True):
+        t = h["Transform"]
+        assert t["posX"] == seat.x and t["posZ"] == seat.side * FOUR.hand_d
+        assert t["scaleX"] / 2 < abs(seat.x), "a hand zone stays in its own quarter"
+    deck = next(o for o in save["ObjectStates"] if o["GUID"] == "c00001")
+    assert deck["Transform"]["posX"] == 0
+
+    lua = save["LuaScript"]
+    seats_line = next(x for x in lua.splitlines() if x.startswith("SEATS_JSON = "))
+    assert json.loads(seats_line.removeprefix("SEATS_JSON = [==[").removesuffix("]==]")) == FOUR.script_header()
+    zones_line = next(x for x in lua.splitlines() if x.startswith("ZONES_JSON = "))
+    board = json.loads(zones_line.removeprefix("ZONES_JSON = [==[").removesuffix("]==]"))["board"]
+    assert board == zones.layout_for(FOUR.mat_w)["board"]
+    assert "QueueDraft = {}" in lua and "DraftCore = {}" in lua
+
+    xml = save["XmlUI"]
+    ET.fromstring(f"<root>{xml}</root>")  # well-formed
+    for color in FOUR.colors:
+        for element in ("matButton", "cubeButton", "deck", "ready", "matPicker", "cubePicker"):
+            assert xml.count(f'id="{element}_{color}"') == 1, f"{element} for {color}"
+        assert f'id="land_{color}_Forest"' in xml
+    assert "{seat}" not in xml and "<!--SEAT-->" not in xml
+
+
+def test_the_duel_ui_keeps_its_two_seats() -> None:
+    from draft_duel.tts_save import global_xml
+
+    xml = global_xml()
+    assert xml.count('id="ready_White"') == 1 and xml.count('id="ready_Red"') == 1
+    assert "Green" not in xml and "{seat}" not in xml
+
+
+def test_four_player_zone_layout_fits_the_narrow_mat_and_quarter() -> None:
+    from draft_duel import zones
+    from draft_duel.seats import FOUR
+
+    assert zones.layout_for(44.0) is zones.LAYOUT
+    lay = zones.layout_for(FOUR.mat_w)
+    b = lay["board"]
+    assert b["u"] + b["w"] / 2 <= FOUR.mat_w / 2, "the board lies on the playmat"
+    side = [x for x in lay["buttons"].values() if "u" in x]
+    assert all(x["u"] + x["w"] / 2 < FOUR.panel_w / 2 for x in side), "Scry / Surveil / Mulligan on the painted mat"
+    edge = 17.5  # the mat's hand-side edge (MAT_Z 9.5 + 16 / 2)
+    for spot in (lay["sideboard"], *lay["dice"]):
+        assert edge < spot["d"] < FOUR.hand_d - 2, "between the mat and the hand zone"
+        assert abs(spot["u"]) < FOUR.seats[0].x
+
+
+def test_four_player_table_and_mats_render(tmp_path: Path) -> None:
+    import pytest
+
+    from draft_duel import playmats, tabletop, zones
+    from draft_duel.seats import FOUR
+
+    name = tabletop.render_all(tmp_path, FOUR)
+    assert name.startswith("table4p-") and tabletop.render_all(tmp_path, FOUR) == name
+    assert tabletop.render_all(tmp_path) != name
+    for seat in FOUR.seats:
+        assert abs(seat.x) + FOUR.panel_w / 2 + tabletop.FRAME <= tabletop.TABLE_W / 2, "panels stay on the image"
+
+    narrow = playmats.render_narrow(tmp_path, FOUR.mat_w)
+    assert [n for n, _ in narrow] == list(playmats.THEMES)
+    with Image.open(tmp_path / narrow[0][1]) as img:
+        assert img.size == playmats.quad_size(FOUR.mat_w)
+        assert img.width / img.height == pytest.approx(FOUR.mat_w / 16, rel=0.01)
+        px = img.width / FOUR.mat_w
+        b = zones.layout_for(FOUR.mat_w)["board"]
+        x = round((b["u"] + FOUR.mat_w / 2) * px)
+        y = round((zones.SLOTS["exile"]["d"] - 9.5 + 8) * px)
+        painted = img.convert("RGB").getpixel((x, y))
+    plain = playmats.with_zones(Image.new("RGB", playmats.quad_size(FOUR.mat_w), (200, 0, 0)), FOUR.mat_w)
+    assert painted == pytest.approx(plain.getpixel((x, y)), abs=12), "the zone board is painted where it lies"

@@ -7,10 +7,30 @@
 --   pick grid     : the player's picks, 12 x 4 smaller cards
 -- Privacy is per card: the pack is hidden from the opponent (they see card
 -- backs), picks are invisible to everyone but their owner.
+-- The four-player save (SEATS_JSON lists four seats) runs the queue draft
+-- instead (queue_draft.lua) on a table split into quarters; see § four players.
 
-COLORS = { "White", "Red" }
+-- Seats from the SEATS_JSON header (seats.py): color, side (-1 = the -z edge,
+-- looking toward +z) and x (centre of the seat's part of the table), in
+-- passing order. Without the header: the 1v1 table.
+SEATS = { hand = 20, mat_w = 44, seats = { { color = "White", side = -1, x = 0 }, { color = "Red", side = 1, x = 0 } } }
+if SEATS_JSON then
+  local ok, s = pcall(function() return JSON.decode(SEATS_JSON) end)
+  if ok and type(s) == "table" and s.seats then SEATS = s end
+end
+COLORS, SEAT_X, SEAT_SIDE = {}, {}, {}
+for i, seat in ipairs(SEATS.seats) do
+  COLORS[i] = seat.color
+  SEAT_X[seat.color] = seat.x
+  SEAT_SIDE[seat.color] = seat.side
+end
+PLAYERS = #COLORS
+SEAT_HALF_W = 1000     -- half the width of a seat's part of the table (1v1: the whole side)
+if PLAYERS > 2 then SEAT_HALF_W = math.abs(SEAT_X[COLORS[1]]) end
+SEAT_NAMES = table.concat(COLORS, ", ", 1, PLAYERS - 1) .. " or " .. COLORS[PLAYERS]
+
 CUBE_GUID = "c00001"   -- the cube deck in a fresh save; a switched cube gets a new GUID
-HAND_GUIDS = { White = "a00001", Red = "a00002" }
+HAND_GUIDS = { White = "a00001", Red = "a00002", Green = "a00003", Blue = "a00004" }
 
 -- Every seat color, so a card can be hidden from all but its owner.
 ALL_COLORS = { "White", "Brown", "Red", "Orange", "Yellow", "Green", "Teal", "Blue",
@@ -19,14 +39,17 @@ ALL_COLORS = { "White", "Brown", "Red", "Orange", "Yellow", "Green", "Teal", "Bl
 PACK_SCALE = 1.5     -- pack cards are drawn larger than normal
 PACK_GAP = 0.5       -- space between pack cards
 PACK_ROW_Z = 5.2     -- distance of the pack row's centre from the middle line
+PACK_COLS = 5        -- cards per pack row (a bigger pack wraps onto further rows)...
+PACK_ROW_STEP = 5    -- ...this far apart
 PICK_SCALE = 0.65
 PICK_COLS = 12
 PICK_ROWS = 4
 PICK_GRID_Z = 9.8    -- distance of the first pick row's centre from the middle line
-HAND_Z = 20          -- hand zones (unused during the draft) sit past the table edge
+HAND_Z = SEATS.hand  -- hand zones (unused during the draft) sit past the pick grid
 BOT_DELAY = 1.0
 CAMERA_PITCH = 60
 CAMERA_DISTANCE = 23
+DRAFT_CAMERA_Z = PACK_ROW_Z + 1
 
 local draft = nil       -- DraftCore instance
 local cube = nil        -- the face-down cube deck
@@ -67,13 +90,29 @@ end
 local function seatYaw(color)
   local t = Player[color].getHandTransform()
   if t and t.rotation then return (t.rotation.y + 180) % 360 end
-  if color == COLORS[1] then return 180 end
+  if sideSign(color) < 0 then return 180 end
   return 0
 end
 
-local function sideSign(color)
-  if color == COLORS[1] then return -1 end
-  return 1
+function sideSign(color)
+  return SEAT_SIDE[color] or 1
+end
+
+-- Owner-relative coordinates: u across the seat's part of the table (positive =
+-- the owner's right), d away from the middle line toward the owner's hand.
+function ownerU(color, x) return (x - SEAT_X[color]) * -sideSign(color) end
+function worldX(color, u) return SEAT_X[color] + u * -sideSign(color) end
+
+function seatPoint(color, u, d, y)
+  return { x = worldX(color, u), y = y, z = sideSign(color) * d }
+end
+
+-- The seat whose part of the table holds point p (nil in the middle strip).
+function seatAt(p)
+  for _, color in ipairs(COLORS) do
+    if p.z * sideSign(color) > 1 and math.abs(ownerU(color, p.x)) <= SEAT_HALF_W then return color end
+  end
+  return nil
 end
 
 local function inList(list, value)
@@ -120,29 +159,28 @@ function placeZones()
     local hand = getObjectFromGUID(HAND_GUIDS[color])
     if hand then
       local p = hand.getPosition()
-      hand.setPosition({ x = 0, y = p.y, z = sideSign(color) * HAND_Z })
+      hand.setPosition({ x = SEAT_X[color], y = p.y, z = sideSign(color) * HAND_Z })
     end
   end
 end
 
--- Pack card i of n, centred left-to-right on the player's pack row.
+-- Pack card i of n, centred left-to-right on the player's pack row (PACK_COLS
+-- to a row; a bigger pack continues on the rows behind, each centred).
 function packPosition(color, i, n)
-  local sign = sideSign(color)
+  local row = math.floor((i - 1) / PACK_COLS)
+  local col = (i - 1) % PACK_COLS
+  local inRow = math.min(PACK_COLS, n - row * PACK_COLS)
   local step = L.w * PACK_SCALE + PACK_GAP
-  local x = (i - (n + 1) / 2) * step * -sign
-  return { x = x, y = L.feltY + 0.25, z = sign * PACK_ROW_Z }
+  return seatPoint(color, (col - (inRow - 1) / 2) * step, PACK_ROW_Z + row * PACK_ROW_STEP, L.feltY + 0.25)
 end
 
 function slotPosition(color, slot)
   local i = slot - 1
   local col = i % PICK_COLS
   local row = math.floor(i / PICK_COLS)
-  local sign = sideSign(color)
   local dx = L.w * PICK_SCALE * 1.05
   local dz = L.h * PICK_SCALE * 1.05
-  local x = (col - (PICK_COLS - 1) / 2) * dx * -sign
-  local z = sign * (PICK_GRID_Z + row * dz)
-  return { x = x, y = L.feltY + 0.25, z = z }
+  return seatPoint(color, (col - (PICK_COLS - 1) / 2) * dx, PICK_GRID_Z + row * dz, L.feltY + 0.25)
 end
 
 -- ---------------------------------------------------------------- debug
@@ -174,12 +212,14 @@ end
 -- Testing aid: make up to n random picks for human seats (bots keep picking on their own).
 function autoPick(n)
   if n <= 0 or draft == nil or not draft.started or draft.finished then return end
-  local picker = draft:picker()
-  if picker and not bots[picker] and #draft.pack == DraftCore.PACK_SIZE then
-    local actions = draft:pick(picker, draft.pack[math.random(1, #draft.pack)])
-    if actions then
-      runActions(actions)
-      n = n - 1
+  for _, picker in ipairs(draft:pickers()) do
+    local cards = draft:currentPack(picker)
+    if n > 0 and not bots[picker] and draft:canPick(picker) and cards and #cards > 0 then
+      local actions = draft:pick(picker, cards[math.random(1, #cards)])
+      if actions then
+        runActions(actions)
+        n = n - 1
+      end
     end
   end
   Wait.time(function() autoPick(n) end, 0.4)
@@ -241,15 +281,20 @@ end
 
 -- ---------------------------------------------------------------- pack cards
 
--- Draft button under each pack card, plus a right-click menu entry.
+local pickable = {}  -- guid -> true for cards carrying a Draft button (not saved: reapplied on load)
+local laidOut = {}   -- color -> draft:turnKey(color) of the pack last laid out at that seat
+
+-- Draft button under each pack card, plus a right-click menu entry. The button
+-- keeps the same size on the table whatever the pack's scale (1.5 in the 1v1 save).
 local function makePickable(card)
+  local k = 1.5 / PACK_SCALE
   card.clearButtons()
   card.createButton({
     click_function = "onDraftButton",
     function_owner = Global,
     label = "Draft",
-    position = { x = 0, y = 0.3, z = 1.75 },
-    width = 600, height = 220, font_size = 150,
+    position = { x = 0, y = 0.3, z = (L.h * PACK_SCALE / 2 + 0.33) / PACK_SCALE },
+    width = 600 * k, height = 220 * k, font_size = 150 * k,
     color = { 0.72, 0.53, 0.04 }, font_color = { 1, 1, 1 },
     tooltip = "Draft this card",
   })
@@ -257,48 +302,89 @@ local function makePickable(card)
   card.addContextMenuItem("Draft this card", function(playerColor)
     tryPick(playerColor, card)
   end)
+  pickable[card.getGUID()] = true
 end
 
 local function makeUnpickable(card)
   card.clearButtons()
   card.clearContextMenu()
+  pickable[card.getGUID()] = nil
 end
 
 function onDraftButton(card, playerColor)
   tryPick(playerColor, card)
 end
 
--- Lays the current pack out on its holder's pack row: face-up, large, locked,
--- hidden from everyone else (they see card backs).
-function layoutPack()
-  if draft == nil or not draft.started or draft.finished then return end
-  local holder = draft:picker()
-  if holder == nil then return end
-  local n = #draft.pack
-  for i, id in ipairs(draft.pack) do
-    local card = getObjectFromGUID(id)
-    if card then
-      card.setHiddenFrom(othersThan(holder))
-      card.setInvisibleTo({})
-      card.setLock(true)
-      card.setScale({ x = PACK_SCALE, y = 1, z = PACK_SCALE })
-      card.setRotation({ x = 0, y = seatYaw(holder), z = 0 })
-      card.setPosition(packPosition(holder, i, n))
+-- Queued pack q (1 = next up), stacked face-down to the owner's right of the pack.
+QUEUE_U = 13           -- first stack's owner-relative x...
+QUEUE_STEP = 2.9       -- ...the next ones further right
+QUEUE_COLS = 3         -- stacks per row (rows follow the pack rows); more packs pile on the last stack
+QUEUE_SCALE = 1.0
+function queuePosition(color, q, k)
+  local slots = QUEUE_COLS * 2
+  local extra = math.max(0, q - slots)
+  q = math.min(q, slots)
+  local col = (q - 1) % QUEUE_COLS
+  local row = math.floor((q - 1) / QUEUE_COLS)
+  return seatPoint(color, QUEUE_U + col * QUEUE_STEP, PACK_ROW_Z + row * PACK_ROW_STEP,
+    L.feltY + 0.2 + (k + extra * 16) * 0.03)
+end
+
+-- Lays a seat's packs out: the pack it is picking from on its pack rows
+-- (face-up, large, locked, with Draft buttons, hidden from everyone else: they
+-- see card backs) and any packs queued behind it as face-down stacks. The
+-- current pack is laid out once per turn (force: again), so the cards left
+-- after a first pick stay where they are.
+function layoutPack(color, force)
+  if draft == nil or not draft.started or draft.finished or L == nil then return end
+  local cards = draft:currentPack(color)
+  local key = draft:turnKey(color)
+  if cards and (force or laidOut[color] ~= key) then
+    laidOut[color] = key
+    local n = #cards
+    for i, id in ipairs(cards) do
+      local card = getObjectFromGUID(id)
+      if card then
+        card.setHiddenFrom(othersThan(color))
+        card.setInvisibleTo({})
+        card.setLock(true)
+        card.setScale({ x = PACK_SCALE, y = 1, z = PACK_SCALE })
+        card.setRotation({ x = 0, y = seatYaw(color), z = 0 })
+        card.setPosition(packPosition(color, i, n))
+        if not pickable[id] then makePickable(card) end
+      end
+    end
+  end
+  for q, pack in ipairs(draft:queuedPacks(color)) do
+    for k, id in ipairs(pack.cards) do
+      local card = getObjectFromGUID(id)
+      if card then
+        if pickable[id] then makeUnpickable(card) end
+        card.setHiddenFrom(othersThan(color))
+        card.setInvisibleTo({})
+        card.setLock(true)
+        card.setScale({ x = QUEUE_SCALE, y = 1, z = QUEUE_SCALE })
+        card.setRotation({ x = 0, y = seatYaw(color), z = 180 })
+        card.setPosition(queuePosition(color, q, k))
+      end
     end
   end
 end
 
-local function dealTo(color, count)
+function layoutPacks(force)
+  for _, color in ipairs(COLORS) do layoutPack(color, force) end
+end
+
+local function dealTo(color, count, packId)
   for i = 1, count do
     local card = cube.takeObject({
-      position = { x = 0, y = L.tableY + 2 + i * 0.2, z = sideSign(color) * PACK_ROW_Z },
+      position = seatPoint(color, 0, PACK_ROW_Z, L.tableY + 2 + i * 0.2),
       rotation = { x = 0, y = seatYaw(color), z = 180 },
       smooth = false,
     })
     if card then
       card.setHiddenFrom(othersThan(color))
-      draft:addToPack(card.getGUID())
-      makePickable(card)
+      draft:addToPack(card.getGUID(), packId)
     end
   end
 end
@@ -326,11 +412,18 @@ end
 -- ---------------------------------------------------------------- flow
 
 function runActions(actions)
+  local touched = {} -- seats whose packs changed: they are laid out again
   for _, a in ipairs(actions) do
     if a.type == "deal" then
-      dealTo(a.to, a.count)
+      dealTo(a.to, a.count, a.pack)
+      touched[a.to] = true
     elseif a.type == "pick" then
       placePick(a.color, a.card, a.slot)
+      if a.turnOver then touched[a.color] = true end
+    elseif a.type == "pass" then
+      -- No work of its own: layoutPack moves the pack to its new holder.
+      touched[a.from] = true
+      touched[a.to] = true
     elseif a.type == "discard" then
       discardCards(a.cards)
     elseif a.type == "finished" then
@@ -338,27 +431,34 @@ function runActions(actions)
         { 0.5, 1, 0.5 })
       startDeckBuilding(true)
     end
-    -- "pass" needs no work of its own: layoutPack moves the pack to its new holder.
   end
-  layoutPack()
+  for _, color in ipairs(COLORS) do
+    if touched[color] then layoutPack(color) end
+  end
   updateUI()
   promptPicker()
 end
 
--- Schedules the bot's pick when it is a bot's turn. (Human pickers see their
--- pack laid out in front of them, with a Draft button under each card.)
+-- Schedules a pick for every bot that has one to make. (Human pickers see
+-- their pack laid out in front of them, with a Draft button under each card.)
 function promptPicker()
-  local picker = draft:picker()
-  if picker and bots[picker] then scheduleBotPick(picker) end
+  if draft == nil then return end
+  for _, color in ipairs(draft:pickers()) do
+    if bots[color] then scheduleBotPick(color) end
+  end
 end
+
+local botWaiting = {} -- color -> true while a bot's pick is scheduled
 
 -- Bot: takes a random card from its pack after a short pause.
 function scheduleBotPick(color)
-  local turn = draft.packNumber * 10 + draft.step
+  if botWaiting[color] then return end
+  botWaiting[color] = true
   Wait.time(function()
-    if draft:picker() ~= color or draft.packNumber * 10 + draft.step ~= turn then return end
-    local id = draft.pack[math.random(1, #draft.pack)]
-    local actions = draft:pick(color, id)
+    botWaiting[color] = nil
+    if draft == nil or not draft:canPick(color) then return end
+    local cards = draft:currentPack(color)
+    local actions = draft:pick(color, cards[math.random(1, #cards)])
     if actions then runActions(actions) end
   end, BOT_DELAY)
 end
@@ -379,7 +479,7 @@ function frameCamera(color)
   if L == nil or not inList(COLORS, color) or not Player[color].seated then return end
   local t = Player[color].getHandTransform()
   -- While deck building, pull back to show both the deck and sideboard columns.
-  local z, distance = PACK_ROW_Z + 1, CAMERA_DISTANCE
+  local z, distance = DRAFT_CAMERA_Z, CAMERA_DISTANCE
   if building then z, distance = DECK_TOP_Z + 6, BUILD_CAMERA_DISTANCE end
   if playing then
     -- Just in front of the hand zone (so only TTS's own hand display shows),
@@ -388,7 +488,7 @@ function frameCamera(color)
     distance = (HAND_Z - 2.5 - PLAY_CAMERA_Z) / math.cos(math.rad(CAMERA_PITCH))
   end
   Player[color].lookAt({
-    position = { x = 0, y = L.feltY, z = sideSign(color) * z },
+    position = seatPoint(color, 0, z, L.feltY),
     pitch = CAMERA_PITCH,
     yaw = t and t.rotation and t.rotation.y or 0,
     distance = distance,
@@ -428,9 +528,6 @@ function isDeckCard(obj)
   return obj ~= nil and obj.type == "Card" and cardInfo(obj).id ~= nil
 end
 
-local function ownerU(color, x) return x * -sideSign(color) end
-local function worldX(color, u) return u * -sideSign(color) end
-
 local function areaOf(color, obj)
   if ownerU(color, obj.getPosition().x) < SIDE_SPLIT_U then return "main" end
   return "side"
@@ -447,7 +544,7 @@ function layoutDeck(color, forceMain)
   end
   local counts = { main = 0, side = 0, lands = 0, basics = {} }
   for _, o in ipairs(getObjects()) do
-    if isDeckCard(o) and o.getPosition().z * sign > 1 then
+    if isDeckCard(o) and seatAt(o.getPosition()) == color then
       local info = cardInfo(o)
       local area = "side"
       if forceMain or areaOf(color, o) == "main" then area = "main" end
@@ -521,10 +618,9 @@ end
 -- Removes one basic land of that name from the player's deck.
 function removeBasic(color, name)
   if not building or ready[color] then return end
-  local sign = sideSign(color)
   for _, o in ipairs(getObjects()) do
     if isDeckCard(o) and cardInfo(o).basic and o.getName() == name
-        and o.getPosition().z * sign > 1 and areaOf(color, o) == "main" then
+        and seatAt(o.getPosition()) == color and areaOf(color, o) == "main" then
       o.destruct()
       Wait.frames(function() layoutDeck(color, false) end, 1)
       return
@@ -560,13 +656,13 @@ SIDEBOARD_D = 13
 LIFE_U = -14           -- life counter on the owner's left
 PILE_Z = 13
 PLAY_CAMERA_Z = 5
+CUBE_PARK_X = 28       -- in a game the cube waits at x = -CUBE_PARK_X on the middle line
 
 -- The cards a player currently has in their deck (left) and sideboard (right).
 function sideCards(color)
-  local sign = sideSign(color)
   local main, side = {}, {}
   for _, o in ipairs(getObjects()) do
-    if isDeckCard(o) and o.getPosition().z * sign > 1 then
+    if isDeckCard(o) and seatAt(o.getPosition()) == color then
       if areaOf(color, o) == "main" then table.insert(main, o) else table.insert(side, o) end
     end
   end
@@ -678,7 +774,7 @@ function startGame()
     if note and note:find("^basic%-bag") then o.destruct() end
   end
   if cube then
-    cube.setPosition({ x = -28, y = L.tableY + 1, z = 0 })
+    cube.setPosition({ x = -CUBE_PARK_X, y = L.tableY + 1, z = 0 })
     cube.setLock(true)
   end
   -- Whatever cards or piles are left in the middle strip (a discard pile from older saves).
@@ -688,13 +784,13 @@ function startGame()
     if o ~= cube and (o.type == "Deck" or o.type == "Card") then
       local p = o.getPosition()
       if math.abs(p.z) < 2.5 and math.abs(p.x) < 12 then
-        o.setPosition({ x = 28, y = L.tableY + 1 + n * 0.5, z = 0 })
+        o.setPosition({ x = CUBE_PARK_X, y = L.tableY + 1 + n * 0.5, z = 0 })
         o.setLock(true)
         n = n + 1
       end
     end
   end
-  firstPlayer = COLORS[math.random(1, 2)]
+  firstPlayer = COLORS[math.random(1, #COLORS)]
   mulligans, bottomOwed = {}, {}
   for _, color in ipairs(COLORS) do
     local lib = findLibrary(color)
@@ -733,7 +829,7 @@ TOKEN_HOME_U = -8      -- where tokens from a card in hand go (owner-relative)
 TOKEN_HOME_Z = 8
 TOKEN_Z_MIN = 1.8      -- a token lands on its owner's battlefield: this far from the middle line...
 TOKEN_Z_MAX = 16       -- ...and no further (the hand zone starts beyond)
-TOKEN_X_MAX = 29       -- and inside the table's edges
+TOKEN_U_MAX = 29       -- and inside the table's edges (owner-relative x)
 -- One of a kind: creating it again moves the existing card to you.
 UNIQUE_TOKENS = { ["The Monarch"] = true, ["Day // Night"] = true }
 
@@ -850,7 +946,7 @@ local function tokenSpot(color, source, ignore)
   for _, off in ipairs(TOKEN_OFFSETS) do
     local x = ax + worldX(color, off.du * su)
     local z = az + sign * off.dv * sv
-    if math.abs(x) <= TOKEN_X_MAX and z * sign >= TOKEN_Z_MIN and z * sign <= TOKEN_Z_MAX
+    if math.abs(ownerU(color, x)) <= TOKEN_U_MAX and z * sign >= TOKEN_Z_MIN and z * sign <= TOKEN_Z_MAX
         and spotIsFree(x, z, ignore) then
       return { x = x, y = L.feltY + 0.3, z = z }
     end
@@ -870,7 +966,7 @@ function createToken(color, label, source)
   local data = tokenData.tokens[label]
   if data == nil or L == nil then return end
   if not inList(COLORS, color) then
-    say(color, "Sit at White or Red to create tokens.")
+    say(color, "Sit at " .. SEAT_NAMES .. " to create tokens.")
     return
   end
   local rot = { x = 0, y = seatYaw(color), z = 0 }
@@ -951,7 +1047,7 @@ end
 
 function openBooster(color)
   if not inList(COLORS, color) then
-    say(color, "Sit at White or Red to open a booster.")
+    say(color, "Sit at " .. SEAT_NAMES .. " to open a booster.")
     return
   end
   if booster then
@@ -1179,10 +1275,6 @@ function loadZones()
   end
 end
 
-local function seatPoint(color, u, d, y)
-  return { x = worldX(color, u), y = y, z = sideSign(color) * d }
-end
-
 -- Smallest difference between two angles, in degrees (0..180).
 local function angleOff(a, b)
   local x = (a - b) % 360
@@ -1352,9 +1444,10 @@ function untapAll(color)
   local n = 0
   for _, o in ipairs(getObjects()) do
     if o.type == "Card" and not o.getLock() then
-      local d = o.getPosition().z * sign
+      local p = o.getPosition()
+      local d = p.z * sign
       local r = o.getRotation()
-      if d > 0.5 and d < UNTAP_D_MAX and angleOff(r.y, yaw) > 5 and not inSomeHand(o) then
+      if d > 0.5 and d < UNTAP_D_MAX and math.abs(ownerU(color, p.x)) <= SEAT_HALF_W and angleOff(r.y, yaw) > 5 and not inSomeHand(o) then
         local faceDown = angleOff(r.z, 0) > 90
         o.setRotationSmooth({ x = 0, y = yaw, z = faceDown and 180 or 0 })
         n = n + 1
@@ -1692,14 +1785,14 @@ local function matUrl(name)
   return nil
 end
 
-MAT_W = 44             -- playmat width in table units (follows the image, see above)
+MAT_W = SEATS.mat_w    -- playmat width in table units (follows the image, see above): 44, or 38 at four seats
 MAT_LOAD_FRAMES = 600  -- give up waiting for a mat's image after this many frames
 
 -- Locks the mat in place over the owner's battlefield.
 local function fitPlaymat(tile, color)
   if tile == nil or L == nil then return end
   tile.setScale({ x = MAT_SCALE, y = 1, z = MAT_SCALE })
-  tile.setPosition({ x = 0, y = L.feltY + MAT_THICKNESS / 2, z = sideSign(color) * MAT_Z })
+  tile.setPosition(seatPoint(color, 0, MAT_Z, L.feltY + MAT_THICKNESS / 2))
   tile.setLock(true)
   tile.interactable = false
 end
@@ -1741,7 +1834,7 @@ function liftOntoPlaymat(color)
     local p = o.getPosition()
     local d = sign * p.z
     if LIFTED_TYPES[o.type] and o.getGUID() ~= m.guid and not (o.getName() or ""):find("playmat")
-        and math.abs(p.x) <= MAT_W / 2 and math.abs(d - MAT_Z) <= MAT_D / 2 then
+        and math.abs(ownerU(color, p.x)) <= MAT_W / 2 and math.abs(d - MAT_Z) <= MAT_D / 2 then
       local bottom = bottomOf(o)
       if bottom < top - 0.005 then
         o.setPosition({ x = p.x, y = p.y + (top + 0.02 - bottom), z = p.z })
@@ -1776,7 +1869,7 @@ function setPlaymat(color, name)
   -- custom tile (raw spawnObjectData without every field fails to load).
   local tile = spawnObject({
     type = "Custom_Tile",
-    position = { x = 0, y = L.feltY + MAT_THICKNESS / 2, z = sideSign(color) * MAT_Z },
+    position = seatPoint(color, 0, MAT_Z, L.feltY + MAT_THICKNESS / 2),
     rotation = { x = 0, y = seatYaw(color), z = 0 },
     scale = { x = MAT_SCALE, y = 1, z = MAT_SCALE },
     sound = false,
@@ -1925,11 +2018,7 @@ function privateOwner(obj)
     if inList(draft.picks[color], id) and not playing then return color end
     if piles[color] and piles[color].sideboard == id then return color end
   end
-  if building and isDeckCard(obj) then
-    local z = obj.getPosition().z
-    if z < -1 then return COLORS[1] end
-    if z > 1 then return COLORS[2] end
-  end
+  if building and isDeckCard(obj) then return seatAt(obj.getPosition()) end
   return nil
 end
 
@@ -1948,7 +2037,7 @@ function rehideAll()
     local owner = privateOwner(o)
     if owner then o.setInvisibleTo(othersThan(owner)) end
   end
-  layoutPack()
+  layoutPacks(true)
 end
 
 function onObjectPickUp(color, obj)
@@ -1985,8 +2074,8 @@ function onObjectDrop(color, obj)
   if not building or ready[color] or not inList(COLORS, color) or not isDeckCard(obj) then return end
   local sign = sideSign(color)
   local p = obj.getPosition()
-  -- Dropped in the middle or on the opponent's side: bring it back to your deck.
-  if p.z * sign <= 1 then obj.setPosition({ x = worldX(color, -1), y = p.y, z = sign * DECK_TOP_Z }) end
+  -- Dropped in the middle or on someone else's side: bring it back to your deck.
+  if seatAt(p) ~= color then obj.setPosition({ x = worldX(color, -1), y = p.y, z = sign * DECK_TOP_Z }) end
   Wait.frames(function() layoutDeck(color, false) end, 2)
 end
 
@@ -1996,10 +2085,8 @@ function tryObjectEnterContainer(container, obj)
   if not building or not isDeckCard(obj) then return true end
   -- Booster Tutor picks go back into the cube when Next game starts the deck editor.
   if container.getGUID() == cubeGuid then return true end
-  local z = obj.getPosition().z
-  if math.abs(z) <= 1 then return true end
-  local owner = COLORS[2]
-  if z < 0 then owner = COLORS[1] end
+  local owner = seatAt(obj.getPosition())
+  if owner == nil then return true end
   return ready[owner] == true -- ready players' piles are grouped on purpose
 end
 
@@ -2013,6 +2100,12 @@ function onPlayerChangeColor(color)
   Wait.frames(function() frameCamera(color) end, 5)
 end
 
+-- The 1v1 save drafts pick-from-5 (DraftCore); more seats run the queue draft.
+function newDraft(first)
+  if PLAYERS > 2 then return QueueDraft.new({ colors = COLORS }) end
+  return DraftCore.new({ colors = COLORS, picksPerPlayer = 48, firstStarter = first })
+end
+
 function onStartClicked(player)
   if draft == nil then return end
   if draft.started then return end
@@ -2021,7 +2114,7 @@ function onStartClicked(player)
     return
   end
   if not inList(COLORS, player.color) and not player.host then
-    say(player.color, "Sit at White or Red to start the draft.")
+    say(player.color, "Sit at " .. SEAT_NAMES .. " to start the draft.")
     return
   end
   -- Measure now: onLoad's delayed layout may not have run yet (seen in TTS), and the
@@ -2034,11 +2127,18 @@ function onStartClicked(player)
       broadcastToAll(color .. " seat is empty, so a bot will draft random cards for it.", { 1, 0.8, 0.3 })
     end
   end
-  local first = COLORS[math.random(1, 2)]
-  draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48, firstStarter = first })
+  local first = COLORS[math.random(1, #COLORS)]
+  draft = newDraft(first)
   cube.shuffle()
-  broadcastToAll("Drafting the " .. (cubeName(cubeKey) or "cube") .. ". " .. first
-    .. " starts pack 1. Starting player alternates every pack.", { 0.6, 0.85, 1 })
+  if PLAYERS > 2 then
+    broadcastToAll("Drafting the " .. (cubeName(cubeKey) or "cube") .. ". Everyone opens a pack of "
+      .. draft.packSize .. ": take " .. draft.picksPerTurn .. " cards, then it joins the next player's queue "
+      .. "(left in rounds 1 and 3, right in round 2). Packs passed to you wait face-down beside yours.",
+      { 0.6, 0.85, 1 })
+  else
+    broadcastToAll("Drafting the " .. (cubeName(cubeKey) or "cube") .. ". " .. first
+      .. " starts pack 1. Starting player alternates every pack.", { 0.6, 0.85, 1 })
+  end
   for _, color in ipairs(COLORS) do frameCamera(color) end
   runActions(draft:start())
 end
@@ -2056,6 +2156,7 @@ end
 
 function onLoad(saved)
   math.randomseed(os.time())
+  pickable, laidOut = {}, {} -- buttons are not saved: layoutPacks puts them back
 
   local data = nil
   if saved and saved ~= "" then
@@ -2063,7 +2164,7 @@ function onLoad(saved)
     if ok then data = decoded end
   end
   if data and data.draft then
-    draft = DraftCore.restore(data.draft)
+    if data.draft.kind == "queue" then draft = QueueDraft.restore(data.draft) else draft = DraftCore.restore(data.draft) end
     bots = {}
     for _, color in ipairs(data.bots or {}) do bots[color] = true end
     ready = data.ready or {}
@@ -2082,8 +2183,9 @@ function onLoad(saved)
     mulligans = data.mulligans or {}
     bottomOwed = data.bottomOwed or {}
   else
-    draft = DraftCore.new({ colors = COLORS, picksPerPlayer = 48 })
+    draft = newDraft(nil)
   end
+  if PLAYERS > 2 then UI.setAttribute("statusPanel", "width", "1180") end -- four seats' pick counts
   if CUBES_JSON then CUBES = JSON.decode(CUBES_JSON) or {} end
   if cubeKey == nil and CUBES[1] then cubeKey = CUBES[1].key end -- a fresh save starts on the first cube
   cube = getObjectFromGUID(cubeGuid)
@@ -2113,11 +2215,7 @@ function onLoad(saved)
     refreshBoards()
     for _, color in ipairs(COLORS) do placeDice(color) end
     -- Buttons, menus and visibility are not kept across a reload: reapply them.
-    for _, id in ipairs(draft.pack) do
-      local card = getObjectFromGUID(id)
-      if card then makePickable(card) end
-    end
-    layoutPack()
+    layoutPacks(true)
     for _, color in ipairs(COLORS) do
       for _, id in ipairs(draft.picks[color]) do
         local card = getObjectFromGUID(id)
@@ -2141,4 +2239,31 @@ function onLoad(saved)
       if draft.started then promptPicker() end
     end
   end, 10)
+end
+
+-- ---------------------------------------------------------------- four players
+-- The four-player save (SEATS_JSON with four seats, as at the MTG EDH table:
+-- White and Red along the -z edge, Green and Blue along the +z edge) gives each
+-- seat a quarter of the table, about 44 wide, centred SEAT_X from the middle.
+-- Everything above works in owner-relative u / d, so only the sizes that must
+-- fit the narrower quarter change here. Draft: the 16-card pack in two rows of
+-- 8, the queued packs as face-down stacks to the owner's right, the 12 x 4 pick
+-- grid behind. Deck editor: deck columns left of the seat's centre, sideboard
+-- right of it. The 38-wide playmat and its zone board come from the builder
+-- (SEATS_JSON mat_w, ZONES_JSON).
+if PLAYERS > 2 then
+  PACK_SCALE = 1.1
+  PACK_GAP = 0.35
+  PACK_COLS = 8
+  PACK_ROW_Z = 3.3
+  PACK_ROW_STEP = 4.4      -- a card (3.37 deep at 1.1x) plus its Draft button below it
+  PICK_GRID_Z = 11.6
+  DRAFT_CAMERA_Z = 10
+  CAMERA_DISTANCE = 27
+  AREAS.main.u0 = -15.8    -- 9 columns: u -15.8 .. -0.2
+  SIDE_SPLIT_U = 1.6
+  AREAS.side.u0 = 3.4      -- 9 columns: u 3.4 .. 15.8
+  BUILD_CAMERA_DISTANCE = 32
+  TOKEN_U_MAX = 20.5
+  CUBE_PARK_X = 42.5       -- the left end of the middle line, clear of the booster row and the mats
 end

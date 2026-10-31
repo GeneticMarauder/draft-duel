@@ -35,6 +35,8 @@ one line, what you saw, where it matters, and the date if you know it.
   Cards stacked with `setPosition` merge by themselves as they land: 0.6 s later every card object is
   gone (they compare equal to nil), so `group()` had nothing to group and code holding the card list never
   found the pile. Find the pile by position and check it holds every card (2026-10-29).
+- Locked cards stacked with `setPosition` (face-down, 0.03 apart) do not merge: the four-player
+  queue's stacks of 14, 12 and 10 cards stayed separate card objects (2026-10-30).
 - A locked deck refuses `putObject` — unlock, put, re-lock.
 - `deck.putObject(card)` with the card turned like the deck: from above (y + 2) it becomes the top card
   (index 1 of `getObjects`, the next `takeObject` / deal), from below (y - 2) the bottom; at the same

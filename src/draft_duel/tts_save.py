@@ -3,23 +3,25 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from datetime import datetime
 from importlib import resources
 from typing import Any
 
 from draft_duel import zones
-from draft_duel.props import merge as merge_props
 from draft_duel.models import Card, Cube, Sheet, SheetSlot, Token
+from draft_duel.props import merge as merge_props
+from draft_duel.seats import DUEL, Table
 from draft_duel.sheets import COLS, PER_SHEET, ROWS
 from draft_duel.tokens import token_faces
 
-SAVE_NAME = "Draft Duel"
+SAVE_NAME = DUEL.name
 FRONT_SHEET_BASE = 1
 TOKEN_SHEET_BASE = 41
 BACK_SHEET_BASE = 51
 CUBE_GUID = "c00001"
-HAND_GUIDS = {"White": "a00001", "Red": "a00002"}
+HAND_GUIDS = {"White": "a00001", "Red": "a00002", "Green": "a00003", "Blue": "a00004"}
 
 
 def assign_slots(cards: list[Card]) -> tuple[list[SheetSlot], list[SheetSlot | None]]:
@@ -76,10 +78,11 @@ def _card_object(guid: str, name: str, text: str, note: str, slot: SheetSlot,
 
 def build_cube_deck(cards: list[Card], fronts: Sequence[SheetSlot], backs: Sequence[SheetSlot | None],
                     sheets: dict[int, Sheet], back_url: str, name: str = "Cube",
-                    first_index: int = 0) -> dict[str, Any]:
+                    first_index: int = 0, x: float = -6) -> dict[str, Any]:
     """The face-down cube deck; double-faced cards carry their back as state 2.
 
-    ``first_index`` offsets the card GUIDs so several cubes in one save never share one.
+    ``first_index`` offsets the card GUIDs so several cubes in one save never share one;
+    ``x`` places it on the middle line (the four-player table keeps it in the very middle).
     """
     contained = []
     for i, (card, front, back) in enumerate(zip(cards, fronts, backs, strict=True), first_index):
@@ -92,7 +95,7 @@ def build_cube_deck(cards: list[Card], fronts: Sequence[SheetSlot], backs: Seque
     return {
         "GUID": CUBE_GUID,
         "Name": "Deck",
-        "Transform": _transform(x=-6, y=CUBE_Y, ry=180, rz=180),
+        "Transform": _transform(x=x, y=CUBE_Y, ry=180, rz=180),
         "Nickname": name,
         "Description": f"{len(cards)} cards",
         "DeckIDs": [s.card_id for s in fronts],
@@ -146,16 +149,17 @@ def token_objects(tokens: list[Token], sheets: dict[int, Sheet], back_url: str) 
     return out
 
 
-def _zones() -> list[dict[str, Any]]:
-    """Hand zones for both seats (the Lua script moves them to fit the table).
+def _zones(table: Table = DUEL) -> list[dict[str, Any]]:
+    """Hand zones for every seat, past its pick grid (the Lua script also puts them there on load).
 
     Picks are kept private per card with ``setInvisibleTo`` rather than with
     hidden zones, which TTS renders as solid colored blocks.
     """
     return [
-        {"GUID": HAND_GUIDS[color], "Name": "HandTrigger", "FogColor": color,
-         "Transform": _transform(z=sign * 19, y=4, ry=0 if sign < 0 else 180, sx=24, sy=5, sz=4)}
-        for color, sign in (("White", -1), ("Red", 1))
+        {"GUID": HAND_GUIDS[s.color], "Name": "HandTrigger", "FogColor": s.color,
+         "Transform": _transform(x=s.x, z=s.side * table.hand_d, y=4, ry=0 if s.side < 0 else 180,
+                                 sx=table.hand_w, sy=5, sz=4)}
+        for s in table.seats
     ]
 
 
@@ -173,7 +177,8 @@ def global_lua(basic_lands: list[dict[str, Any]] | None = None,
                mats: list[dict[str, str]] | None = None,
                cubes: list[dict[str, Any]] | None = None,
                cube_decks: dict[str, dict[str, Any]] | None = None,
-               zones: dict[str, Any] | None = None) -> str:
+               zones: dict[str, Any] | None = None,
+               table: Table = DUEL) -> str:
     """The Global script: data headers, rules engine, then the table adapter.
 
     ``tokens`` is ``{"tokens": {label: card data}, "makers": {card id: [label, ...]}}``;
@@ -182,7 +187,8 @@ def global_lua(basic_lands: list[dict[str, Any]] | None = None,
     deck's save data, which the script spawns (``spawnObjectJSON``) when players
     switch cubes. The decks stay JSON strings so loading the save decodes nothing.
     ``zones`` is the zone board (``zones.LAYOUT`` plus its image ``url``); without it
-    the game has no board, only the default library spot.
+    the game has no board, only the default library spot. ``table`` gives the seats
+    (``SEATS_JSON``); both rules engines are included and the seat count picks one.
     """
     pkg = resources.files("draft_duel") / "lua"
     decks = ", ".join(f"[{json.dumps(key)}] = {lua_long_string(json.dumps(deck))}"
@@ -192,12 +198,14 @@ def global_lua(basic_lands: list[dict[str, Any]] | None = None,
               f"MATS_JSON = {lua_long_string(json.dumps(mats or []))}\n"
               f"CUBES_JSON = {lua_long_string(json.dumps(cubes or []))}\n"
               f"ZONES_JSON = {lua_long_string(json.dumps(zones or {}))}\n"
+              f"SEATS_JSON = {lua_long_string(json.dumps(table.script_header()))}\n"
               f"CUBE_DECKS = {{ {decks} }}\n")
     return (header + (pkg / "draft_core.lua").read_text(encoding="utf-8") + "\n"
+            + (pkg / "queue_draft.lua").read_text(encoding="utf-8") + "\n"
             + (pkg / "table.lua").read_text(encoding="utf-8"))
 
 
-def cube_pickers(cubes: Sequence[dict[str, Any]]) -> str:
+def cube_pickers(cubes: Sequence[dict[str, Any]], colors: Sequence[str] = DUEL.colors) -> str:
     """Per-seat cube pickers: a mid-screen list of the cubes, shown only to that seat."""
     if any(c in cube["name"] for cube in cubes for c in '<>&"'):
         raise ValueError("cube names must not need XML escaping (TTS shows entities literally)")
@@ -205,7 +213,7 @@ def cube_pickers(cubes: Sequence[dict[str, Any]]) -> str:
         return ""
     height = 100 + len(cubes) * 66
     panels = []
-    for color in ("White", "Red"):
+    for color in colors:
         rows = "".join(
             f'<Button id="cubePick_{color}_{i}" onClick="onCubePick" preferredHeight="56" fontSize="20" '
             f'textColor="#FFFFFF" colors="#283593|#3949AB|#1A237E|#555555">{cube["name"]}  ({cube["count"]} cards)</Button>'
@@ -234,7 +242,7 @@ def _mat_cell(color: str, index: int, name: str, image: str | None) -> str:
             f'<Text preferredHeight="24" fontSize="15" color="#FFFFFF">{name}</Text></VerticalLayout></Panel>')
 
 
-def mat_pickers(mats: Sequence[dict[str, str]]) -> str:
+def mat_pickers(mats: Sequence[dict[str, str]], colors: Sequence[str] = DUEL.colors) -> str:
     """Per-seat playmat pickers: a mid-screen grid of thumbnails, shown only to that seat.
 
     Thumbnail ``i`` (1-based, ``MATS_JSON`` order) is the custom UI asset ``matthumb<i>``.
@@ -244,7 +252,7 @@ def mat_pickers(mats: Sequence[dict[str, str]]) -> str:
     rows = (len(mats) + 1 + 3) // 4  # four thumbnails per row, plus "None"
     height = 90 + rows * 122
     panels = []
-    for color in ("White", "Red"):
+    for color in colors:
         cells = [_mat_cell(color, 0, "None", None)]
         cells += [_mat_cell(color, i, m["name"], f"matthumb{i}") for i, m in enumerate(mats, 1)]
         panels.append(
@@ -261,10 +269,17 @@ def mat_pickers(mats: Sequence[dict[str, str]]) -> str:
     return "\n".join(panels)
 
 
-def global_xml(mats: Sequence[dict[str, str]] = (), cubes: Sequence[dict[str, Any]] = ()) -> str:
-    """The Global UI (status bar, buttons, per-seat prompts, playmat and cube pickers)."""
+def global_xml(mats: Sequence[dict[str, str]] = (), cubes: Sequence[dict[str, Any]] = (),
+               colors: Sequence[str] = DUEL.colors) -> str:
+    """The Global UI (status bar, buttons, per-seat prompts, playmat and cube pickers) for the ``colors`` seats.
+
+    Each ``<!--SEAT-->`` ... ``<!--/SEAT-->`` block of ui.xml is repeated per seat with ``{seat}`` = its color.
+    """
     xml = (resources.files("draft_duel") / "lua" / "ui.xml").read_text(encoding="utf-8")
-    return xml.replace("<!--MAT_PICKERS-->", mat_pickers(mats)).replace("<!--CUBE_PICKERS-->", cube_pickers(cubes))
+    xml = re.sub(r"<!--SEAT-->\n(.*?)<!--/SEAT-->\n",
+                 lambda m: "".join(m.group(1).replace("{seat}", c) for c in colors), xml, flags=re.DOTALL)
+    return (xml.replace("<!--MAT_PICKERS-->", mat_pickers(mats, colors))
+            .replace("<!--CUBE_PICKERS-->", cube_pickers(cubes, colors)))
 
 
 def ui_assets(mats: Sequence[dict[str, str]]) -> list[dict[str, Any]]:
@@ -277,7 +292,7 @@ def build_save(cubes: list[Cube], sheets: dict[int, Sheet], back_url: str,
                makers: dict[str, list[str]] | None = None,
                mats: list[dict[str, str]] | None = None,
                zones_url: str | None = None, table_url: str | None = None,
-               props: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+               props: list[dict[str, Any]] | None = None, table: Table = DUEL) -> dict[str, Any]:
     """The complete save: table, zones, cube deck, scripts and UI.
 
     The first cube is on the table when the save loads; every cube's deck is also
@@ -287,7 +302,9 @@ def build_save(cubes: list[Cube], sheets: dict[int, Sheet], back_url: str,
     the playmats players can choose (``name``, image ``url`` and ``thumb``);
     ``zones_url`` is the zone board image (see ``zones.py``); ``table_url`` the
     table top (see ``tabletop.py``), on TTS's custom rectangle table (without it, ``Table_RPG``);
-    ``props`` are extra objects for the table's ends (see ``props.py``).
+    ``props`` are extra objects for the table's ends (see ``props.py``). ``table`` is the
+    seating (``seats.DUEL``, or ``seats.FOUR`` for the four-player queue draft); ``mats``
+    and ``table_url`` must be drawn for it.
     """
     if not cubes:
         raise ValueError("a save needs at least one cube")
@@ -301,15 +318,22 @@ def build_save(cubes: list[Cube], sheets: dict[int, Sheet], back_url: str,
     for cube in cubes:
         end = start + len(cube.cards)
         decks[cube.key] = build_cube_deck(cube.cards, fronts[start:end], backs[start:end], sheets, back_url,
-                                          cube.name, first_index=start)
+                                          cube.name, first_index=start, x=-6 if table is DUEL else 0)
         start = end
     cube_list = [{"key": c.key, "name": c.name, "count": len(c.cards)} for c in cubes]
     names = ", ".join(c.name for c in cubes)
     lands = basic_land_objects(basics, fronts[len(all_cards):], sheets, back_url)
     token_data = {"tokens": token_objects(tokens or [], sheets, back_url), "makers": makers or {}}
+    note = (f"Draft Duel: a 1v1 pick-from-5 cube draft. Cubes: {names}. Choose one with the Cube button, "
+            "sit at White and Red, then press Start Draft.")
+    if len(table.seats) > 2:
+        note = (f"Draft Duel 4P: a four-player queue draft. Cubes: {names}. Each player opens a 16-card pack, "
+                "takes 2 and passes it into the next player's queue (3 packs each, 48 picks). Choose a cube with "
+                "the Cube button, sit at White, Red, Green and Blue, then press Start Draft.")
+    zone_layout = {**zones.layout_for(table.mat_w), "url": zones_url} if zones_url else None
     return {
-        "SaveName": SAVE_NAME,
-        "GameMode": SAVE_NAME,
+        "SaveName": table.name,
+        "GameMode": table.name,
         "Date": datetime.now().strftime("%m/%d/%Y %I:%M:%S %p"),
         "VersionNumber": "",
         "GameType": "Card Game",
@@ -320,15 +344,13 @@ def build_save(cubes: list[Cube], sheets: dict[int, Sheet], back_url: str,
         "Table": "Table_Custom" if table_url else "Table_RPG",
         **({"TableURL": table_url} if table_url else {}),
         "Sky": "Sky_Museum",
-        "Note": (f"Draft Duel: a 1v1 pick-from-5 cube draft. Cubes: {names}. Choose one with the Cube button, "
-                 "sit at White and Red, then press Start Draft."),
+        "Note": note,
         "Rules": "",
         "TabStates": {},
         "Hands": {"Enable": True, "DisableUnused": False, "Hiding": 0},
-        "LuaScript": global_lua(lands, token_data, mats, cube_list, decks,
-                                 {**zones.LAYOUT, "url": zones_url} if zones_url else None),
+        "LuaScript": global_lua(lands, token_data, mats, cube_list, decks, zone_layout, table),
         "LuaScriptState": "",
-        "XmlUI": global_xml(mats or [], cube_list),
+        "XmlUI": global_xml(mats or [], cube_list, table.colors),
         "CustomUIAssets": ui_assets(mats or []),
-        "ObjectStates": merge_props([*_zones(), decks[cubes[0].key]], props or []),
+        "ObjectStates": merge_props([*_zones(table), decks[cubes[0].key]], props or []),
     }

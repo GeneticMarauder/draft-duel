@@ -11,6 +11,7 @@ from typing import Any
 from lupa import LuaRuntime
 
 from draft_duel import zones
+from draft_duel.seats import DUEL, FOUR, Table
 
 LUA_DIR = resources.files("draft_duel") / "lua"
 MOCK = Path(__file__).parent / "lua" / "tts_mock.lua"
@@ -25,9 +26,10 @@ def _to_py(value: Any) -> Any:
     return value
 
 
-def make_lua(with_table: bool = False) -> LuaRuntime:
+def make_lua(with_table: bool = False, table: Table = DUEL) -> LuaRuntime:
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute((LUA_DIR / "draft_core.lua").read_text(encoding="utf-8"))
+    lua.execute((LUA_DIR / "queue_draft.lua").read_text(encoding="utf-8"))
     if with_table:
         lua.execute(MOCK.read_text(encoding="utf-8"))
         g = lua.globals()
@@ -42,7 +44,9 @@ def make_lua(with_table: bool = False) -> LuaRuntime:
         ])
         g.TOKENS_JSON = json.dumps(TOKENS)
         g.MATS_JSON = json.dumps([{"name": n, "url": f"https://h/{n}.jpg"} for n in ("Volcano", "Aurora")])
-        g.ZONES_JSON = json.dumps({**zones.LAYOUT, "url": "https://h/zones.jpg"})
+        g.ZONES_JSON = json.dumps({**zones.layout_for(table.mat_w), "url": "https://h/zones.jpg"})
+        if table is not DUEL:
+            g.SEATS_JSON = json.dumps(table.script_header())
         g.CUBES_JSON = json.dumps([{"key": k, "name": n, "count": c} for k, n, c in CUBES])
         g.CUBE_DECKS = lua.table_from({k: json.dumps({"Name": "Deck", "Nickname": n, "ContainedObjects": [{}] * c})
                                        for k, n, c in CUBES})
@@ -1477,3 +1481,274 @@ def test_cards_being_scried_survive_a_reload_and_come_back_for_sideboarding() ->
     g.Mock.flush()
     g.onZoneScry(_boards(g)["White zones"], "White")
     assert _said(g, "White scries 1."), "a new game starts with nothing being looked at"
+
+
+# ------------------------------------------------------------------ four players: the queue draft
+
+SEATS4 = list(FOUR.colors)  # passing order: White -> Red -> Green -> Blue -> White
+
+
+def new_queue(lua: LuaRuntime, **opts):
+    extra = "".join(f", {k}={v}" for k, v in opts.items())
+    return lua.eval(f'function() return QueueDraft.new({{colors={{"White","Red","Green","Blue"}}{extra}}}) end')()
+
+
+class QueueTable:
+    """Plays the adapter's role for the queue engine: deals ids into packs."""
+
+    def __init__(self, core) -> None:
+        self.core = core
+        self.next_id = 0
+        self.passes: list[tuple[str, str]] = []
+        self.opened: list[str] = []
+
+    def run(self, actions) -> list[dict]:
+        out = _to_py(actions)
+        for a in out:
+            if a["type"] == "deal":
+                self.opened.append(a["to"])
+                for _ in range(a["count"]):
+                    self.next_id += 1
+                    self.core.addToPack(self.core, f"c{self.next_id}", a["pack"])
+            elif a["type"] == "pass":
+                self.passes.append((a["from"], a["to"]))
+        return out
+
+
+def _current(core, color) -> list:
+    return list(_to_py(core.currentPack(core, color)) or [])
+
+
+def test_queue_draft_everyone_opens_16_takes_2_and_passes_left() -> None:
+    lua = make_lua()
+    core = new_queue(lua)
+    table = QueueTable(core)
+    table.run(core.start(core))
+    assert table.opened == SEATS4 and table.next_id == 64
+    assert "Sit at White, Red, Green or Blue," in new_queue(lua).status(new_queue(lua))
+    assert sorted(_to_py(core.pickers(core))) == sorted(SEATS4), "everyone picks at once"
+
+    first = _current(core, "White")
+    assert len(first) == 16
+    actions = table.run(pick(core, "White", first[0])[0])
+    assert actions == [{"type": "pick", "color": "White", "card": first[0], "slot": 1, "turnOver": False}]
+    assert _current(core, "White") == first[1:], "the same pack stays for the second pick"
+    table.run(pick(core, "White", first[1])[0])
+    assert table.passes == [("White", "Red")], "round 1 passes left"
+    queued = _to_py(core.queuedPacks(core, "Red"))
+    assert len(queued) == 1 and queued[0]["cards"] == first[2:], "the pack waits in Red's queue"
+    assert core.currentPack(core, "White") is None, "White has nothing until a pack comes back"
+    actions, err = pick(core, "White", first[2])
+    assert actions is None and "wait" in err
+
+
+def test_queue_draft_lets_fast_players_queue_packs_for_a_slow_one() -> None:
+    lua = make_lua()
+    core = new_queue(lua)
+    table = QueueTable(core)
+    table.run(core.start(core))
+    # Everyone but Red picks whenever they have a pack; Red never does.
+    for _ in range(200):
+        moved = False
+        for color in ("White", "Green", "Blue"):
+            cards = _current(core, color)
+            if cards and core.canPick(core, color):
+                table.run(pick(core, color, cards[0])[0])
+                moved = True
+        if not moved:
+            break
+    # Every pack ends up in front of Red: its own, then White's, Blue's and Green's as they come round.
+    assert len(_to_py(core.queues)["Red"]) == 4
+    assert core.pickCount(core, "White") == 3 * 2 and core.pickCount(core, "Red") == 0, "2 from each pack it saw"
+    assert "Round 1/3" in core.status(core) and "Red 0/48 (4 packs)" in core.status(core)
+
+
+def test_queue_draft_full_run_gives_everyone_48_and_alternates_direction() -> None:
+    lua = make_lua()
+    core = new_queue(lua)
+    table = QueueTable(core)
+    table.run(core.start(core))
+    turns = 0
+    while not core.finished:
+        for color in SEATS4:
+            while core.canPick(core, color):
+                table.run(pick(core, color, _current(core, color)[-1])[0])
+                turns += 1
+        assert turns < 10000
+    for color in SEATS4:
+        assert core.pickCount(core, color) == 48
+    assert table.next_id == 4 * 3 * 16 == 192, "three 16-card packs each, nothing discarded"
+    assert table.opened.count("White") == 3
+    lefts = set(zip(SEATS4, SEATS4[1:] + SEATS4[:1], strict=True))
+    rights = {(b, a) for a, b in lefts}
+    assert set(table.passes) == lefts | rights, "rounds 1 and 3 pass left, round 2 right"
+    assert core.status(core).startswith("Draft complete!")
+
+
+def test_queue_draft_round_two_opens_as_soon_as_a_player_finishes_round_one() -> None:
+    lua = make_lua()
+    core = new_queue(lua)
+    table = QueueTable(core)
+    table.run(core.start(core))
+    # Seats take turns picking one card; the moment White has taken its 8 turns of round 1 it opens
+    # its round 2 pack, while others are still finishing round 1.
+    opened = _to_py(core.opened)
+    while opened["White"] == 1:
+        for color in SEATS4:
+            if core.canPick(core, color) and opened["White"] == 1:
+                table.run(pick(core, color, _current(core, color)[0])[0])
+                opened = _to_py(core.opened)
+    assert table.opened[4:] == ["White"], "White opened its round 2 pack first"
+    assert any(opened[c] == 1 for c in SEATS4[1:]), "without waiting for the rest of the table"
+    assert len(_current(core, "White")) in (16, 14) or _to_py(core.queuedPacks(core, "White"))
+
+
+def test_queue_draft_serialize_restore_mid_turn() -> None:
+    lua = make_lua()
+    core = new_queue(lua)
+    table = QueueTable(core)
+    table.run(core.start(core))
+    table.run(pick(core, "Blue", _current(core, "Blue")[0])[0])  # first of Blue's two picks
+    data = json.loads(json.dumps(_to_py(core.serialize(core))))
+    restored = lua.globals().QueueDraft.restore(lua.table_from(data, recursive=True))
+    assert restored.status(restored) == core.status(core)
+    assert _current(restored, "Blue") == _current(core, "Blue")
+    actions = table.run(pick(restored, "Blue", _current(restored, "Blue")[0])[0])
+    assert any(a["type"] == "pass" and a["to"] == "White" for a in actions), "the turn ends after the 2nd pick"
+
+
+def _four_table(humans: tuple[str, ...] = tuple(SEATS4)) -> tuple[LuaRuntime, Any]:
+    lua = make_lua(with_table=True, table=FOUR)
+    g = lua.globals()
+    g.Mock.setupFour(515)
+    for color in SEATS4:
+        g.Player[color].seated = color in humans
+    g.onLoad("")
+    g.Mock.flush()
+    return lua, g
+
+
+def _pack_cards(g, color: str) -> list:
+    """Cards with a Draft button on the seat's part of the table, in pack order."""
+    out = [o for o in g.Mock.objects.values() if o.kind == "Card" and len(o.buttons) > 0
+           and g.seatAt(o.pos) == color]
+    return sorted(out, key=lambda o: (round(abs(o.pos.z), 1), g.ownerU(color, o.pos.x)))
+
+
+def test_four_player_table_seats_and_lays_out_every_pack() -> None:
+    _, g = _four_table()
+    assert g.PLAYERS == 4 and g.SEAT_NAMES == "White, Red, Green or Blue"
+    g.onStartClicked(g.Player.Green)
+    g.Mock.flush()
+    for color in SEATS4:
+        hand = g.Player[color].getHandTransform().position
+        assert g.seatAt(hand) == color, "each hand zone is in its own quarter"
+        cam = g.Player[color].camera
+        assert g.seatAt(cam.position) == color
+        pack = _pack_cards(g, color)
+        assert len(pack) == 16, f"{color} sees its 16-card pack"
+        assert all(c.rot.z == 0 and c.locked for c in pack)
+        hidden = set(_lua_list(pack[0].hiddenFrom))
+        assert color not in hidden and set(SEATS4) - {color} <= hidden
+        # Two rows of 8, inside the quarter, never overlapping.
+        xs = sorted({round(c.pos.x, 2) for c in pack})
+        zs = sorted({round(c.pos.z, 2) for c in pack})
+        assert len(xs) == 8 and len(zs) == 2
+        assert all(b - a > 2.2 * g.PACK_SCALE for a, b in itertools.pairwise(xs))
+        assert all(abs(g.ownerU(color, c.pos.x)) + 2.2 * g.PACK_SCALE / 2 < g.SEAT_HALF_W for c in pack)
+        assert abs(zs[1] - zs[0]) > 3.06 * g.PACK_SCALE + 0.5, "room for the Draft buttons between rows"
+    assert "Round 1/3" in g.Mock.ui["statusText"] and g.Mock.ui["statusPanel.width"] == "1180"
+
+
+def test_four_player_picks_queue_the_pack_for_the_next_player() -> None:
+    _, g = _four_table()
+    g.onStartClicked(g.Player.White)
+    g.Mock.flush()
+    white = _pack_cards(g, "White")
+    spots = {c.guid: (c.pos.x, c.pos.z) for c in white}
+    g.onDraftButton(white[0], "White")
+    g.Mock.flush()
+    left = _pack_cards(g, "White")
+    assert len(left) == 15 and all((c.pos.x, c.pos.z) == spots[c.guid] for c in left), \
+        "after the first pick the other cards stay put"
+    white[2].menu[1].fn("Red")  # Red can't draft from White's pack
+    assert any("not yours" in m for m in _lua_list(g.Mock.messages))
+    g.onDraftButton(white[1], "White")
+    g.Mock.flush()
+    assert _pack_cards(g, "White") == [], "White waits for a pack"
+    queued = [g.Mock.objects[c.guid] for c in white[2:]]
+    assert all(g.seatAt(o.pos) == "Red" and o.rot.z == 180 and o.locked and len(o.buttons) == 0 for o in queued), \
+        "the 14 cards wait face-down in Red's queue"
+    assert all(abs(o.pos.x - queued[0].pos.x) < 0.01 and abs(o.pos.z - queued[0].pos.z) < 0.01 for o in queued)
+    assert g.ownerU("Red", queued[0].pos.x) > 11, "the queue stacks sit to the right of Red's pack"
+    picks = [o for o in g.Mock.objects.values() if o.kind == "Card" and o.scale.x == g.PICK_SCALE]
+    assert len(picks) == 2 and all(g.seatAt(o.pos) == "White" for o in picks)
+
+    # Red takes 2 from its own pack: White's pack comes up for Red, Red's goes to Green.
+    red = _pack_cards(g, "Red")
+    g.onDraftButton(red[0], "Red")
+    g.onDraftButton(red[1], "Red")
+    g.Mock.flush()
+    now = _pack_cards(g, "Red")
+    assert sorted(c.guid for c in now) == sorted(o.guid for o in queued), "White's pack is Red's current pack"
+    assert all(c.rot.z == 0 and c.scale.x == g.PACK_SCALE for c in now)
+
+
+def test_four_player_draft_against_bots_reaches_the_game() -> None:
+    _, g = _four_table(humans=("Blue",))
+    g.onStartClicked(g.Player.Blue)
+    g.Mock.flush()
+    assert sum("seat is empty" in m for m in _lua_list(g.Mock.messages)) == 3
+    assert g.onChat("!draftauto 48", g.Player.Blue) is False
+    g.Mock.flush()
+    assert g.Mock.ui["statusText"].startswith("Deck building")
+    assert len(g.Mock.objects["c00001"].cards) == 515 - 192
+
+    for color in SEATS4:
+        mine = [o for o in _deck_cards(g) if g.seatAt(o.pos) == color]
+        assert len(mine) == 48, f"{color}'s picks are in its deck columns"
+        us = [g.ownerU(color, o.pos.x) for o in mine]
+        assert all(u < g.SIDE_SPLIT_U for u in us) and min(us) > -g.SEAT_HALF_W
+        assert all(set(SEATS4) - {color} <= set(_lua_list(o.invisibleTo)) for o in mine)
+
+    g.onReadyClicked(g.Player.Blue)
+    g.Mock.flush()
+    assert g.Mock.ui["statusPanel.active"] == "false", "the game is on"
+    libs = {o.name: o for o in g.Mock.objects.values() if o.kind == "Deck" and o.name.endswith("library")}
+    assert set(libs) == {f"{c} library" for c in SEATS4}
+    for color in SEATS4:
+        assert g.seatAt(libs[f"{color} library"].pos) == color
+        assert g.Mock.dealt[color] == 7
+        board = next(o for o in g.Mock.objects.values() if o.name == f"{color} zones")
+        assert g.seatAt(board.pos) == color and abs(g.ownerU(color, board.pos.x) - 17.2) < 0.01
+    lives = sorted(o.name for o in g.Mock.objects.values() if o.kind == "Counter")
+    assert lives == sorted(f"{c} life" for c in SEATS4)
+    assert abs(g.Mock.objects["c00001"].pos.x) > 40, "the cube waits at the end of the middle line"
+
+    # Draw and the next game work per seat.
+    g.drawCard("Green")
+    assert g.Mock.dealt.Green == 8
+    g.nextGame()
+    g.Mock.flush()
+    for color in SEATS4:
+        assert len([o for o in _deck_cards(g) if g.seatAt(o.pos) == color]) == 48
+
+
+def test_four_player_queue_draft_survives_a_reload() -> None:
+    lua, g = _four_table()
+    g.onStartClicked(g.Player.White)
+    g.Mock.flush()
+    g.onDraftButton(_pack_cards(g, "White")[0], "White")  # White is mid-turn
+    g.Mock.flush()
+    saved = g.onSave()
+    for o in g.Mock.objects.values():  # a reload drops buttons and menus
+        o.buttons = lua.table()
+        o.menu = lua.table()
+    g.onLoad(saved)
+    g.Mock.flush()
+    assert len(_pack_cards(g, "White")) == 15 and len(_pack_cards(g, "Red")) == 16
+    g.onDraftButton(_pack_cards(g, "White")[0], "White")
+    g.Mock.flush()
+    assert _pack_cards(g, "White") == [], "the second pick ends White's turn"
+    red_queue = [o for o in g.Mock.objects.values() if o.kind == "Card" and g.seatAt(o.pos) == "Red" and o.rot.z == 180]
+    assert len(red_queue) == 14

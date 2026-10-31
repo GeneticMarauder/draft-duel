@@ -327,8 +327,9 @@ THUMB_SIZE = (440, 160)  # picture on the in-game playmat picker
 IMAGE_TYPES = (".png", ".jpg", ".jpeg", ".webp")
 
 
-def fit_image(path: Path) -> Image.Image:
-    """A picture of any shape on a mat: all of it shown, the leftover filled with its edge colour."""
+def fit_image(path: Path, size: tuple[int, int] = MAT_SIZE) -> Image.Image:
+    """A picture of any shape on a mat of ``size``: all of it shown, the leftover filled with its edge colour."""
+    W, H = size
     with Image.open(path) as src:
         img = src.convert("RGB")
     scale = min(W / img.width, H / img.height)
@@ -340,7 +341,7 @@ def fit_image(path: Path) -> Image.Image:
         strips = [img.crop((0, 0, img.width, 4)), img.crop((0, img.height - 4, img.width, img.height))]
     means = [ImageStat.Stat(strip).mean for strip in strips]
     fill = tuple(round(sum(m[c] for m in means) / len(means)) for c in range(3))
-    mat = Image.new("RGB", MAT_SIZE, fill)
+    mat = Image.new("RGB", size, fill)
     mat.paste(img, ((W - img.width) // 2, (H - img.height) // 2))
     return mat
 
@@ -363,19 +364,31 @@ MAT_UNITS = (44.0, 16.0)  # the in-game mat in table units (table.lua MAT_D; the
 MAT_MID = 9.5             # its centre's distance from the middle line (table.lua MAT_Z)
 
 
-def with_zones(img: Image.Image) -> Image.Image:
+def with_zones(img: Image.Image, mat_w: float = MAT_UNITS[0]) -> Image.Image:
     """The mat with the zone board's art painted where the board lies, as on the table under it.
 
     A mat image is drawn as its owner sees it (top toward the middle line), like the table's panels.
+    ``mat_w`` is the in-game mat's width (the four-player mat is 38 wide; its board sits further in).
     """
-    b = zones.BOARD
-    px = W / MAT_UNITS[0]
+    b = zones.layout_for(mat_w)["board"]
+    px = img.width / mat_w
     board = zones.render_board().resize((round(b["w"] * px), round(b["h"] * px)), Image.LANCZOS)
-    left = round((b["u"] - b["w"] / 2 + MAT_UNITS[0] / 2) * px)
+    left = round((b["u"] - b["w"] / 2 + mat_w / 2) * px)
     top = round((b["d"] - b["h"] / 2 - (MAT_MID - MAT_UNITS[1] / 2)) * px)
     out = img.copy()
     out.paste(board, (left, top))
     return out
+
+
+def quad_size(mat_w: float) -> tuple[int, int]:
+    """Pixel size of a mat ``mat_w`` x 16 units at the standard mat's resolution."""
+    return round(H * mat_w / MAT_UNITS[1]), H
+
+
+def crop_centre(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    """The middle ``size`` of a theme's art (a narrower mat keeps the centre of the picture)."""
+    left, top = (img.width - size[0]) // 2, (img.height - size[1]) // 2
+    return img.crop((left, top, left + size[0], top + size[1]))
 
 
 def render_all(out_dir: Path, custom_dir: Path | None = None) -> list[tuple[str, str, str]]:
@@ -393,3 +406,16 @@ def render_all(out_dir: Path, custom_dir: Path | None = None) -> list[tuple[str,
         thumb = save_hashed(img.resize(THUMB_SIZE, Image.LANCZOS), out_dir, f"matthumb{i:02d}")
         out.append((name, mat, thumb))
     return out
+
+
+def render_narrow(out_dir: Path, mat_w: float, custom_dir: Path | None = None) -> list[tuple[str, str]]:
+    """The same playmats for a narrower in-game mat (``mat_w`` x 16: the four-player table's quarters).
+
+    Themes keep the centre of their art; pictures are fitted whole again. Returns ``(name, mat filename)``
+    in ``render_all``'s order, so both tables share the picker's thumbnails.
+    """
+    size = quad_size(mat_w)
+    images = [(name, lambda n=name: crop_centre(render(n), size)) for name in THEMES]
+    images += [(name, lambda p=path: fit_image(p, size)) for name, path in custom_mats(custom_dir)]
+    return [(name, save_hashed(with_zones(draw(), mat_w), out_dir, f"mat{round(mat_w)}w{i:02d}"))
+            for i, (name, draw) in enumerate(images, 1)]

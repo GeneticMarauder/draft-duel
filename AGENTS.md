@@ -72,11 +72,17 @@ Only add the LLM extra (`agent-core[llm]`) if this project calls an LLM at runti
 
 ## Architecture
 
-Builds **Draft Duel**, a Tabletop Simulator (TTS) save for a 1v1 pick-from-5 cube draft. One save
+Builds **Draft Duel**, a Tabletop Simulator (TTS) save for a 1v1 pick-from-5 cube draft, and
+**Draft Duel 4P**, the same mod for four players with a queue draft. Each save
 offers several cubes (default: the LSV Cube from CubeCobra and the latest MTGO Vintage Cube); players
-pick one at the table before the draft. Two halves:
+pick one at the table before the draft. Both saves share the sheets, tokens and props. Two halves:
 
 **Python builder** (`uv run draft-duel [--cubes lsv,vintage,cubecobra:ID] [--push]`)
+- `seats.py` — the two tables: `DUEL` (White at -z, Red at +z, each half the table) and `FOUR` (as at the
+  MTG EDH table: White and Red along -z, Green and Blue along +z, each a quarter centred `QUARTER_X` 22.1
+  from the middle; seats in passing order). A `Table` has the save `name`, `seats` (`color`, `side`, `x`),
+  `hand_d`/`hand_w`, `mat_w` (44 or 38; mats are always 16 deep) and the painted `panel_w`;
+  `script_header()` reaches the script as `SEATS_JSON`.
 - `cubes.py` — `CUBES` registry (`CubeSource`: `key` saved with the game, display `name`, `kind`, `ref`).
   `cubecobra` sources use `fetch_cube_ids` (owner's printings, plus the cube's basics); the `mtgo` source
   reads MTGO's official page (`MTGO_VINTAGE_URL`, always the latest iteration) with `parse_mtgo_cardlist`
@@ -98,6 +104,10 @@ pick one at the table before the draft. Two halves:
   script as a JSON string (`CUBE_DECKS[key]`, plus the `CUBES_JSON` list) — strings, so loading the save
   decodes nothing. Headers use `lua_long_string` (enough `=` that card text can't end the string).
   `cube_pickers` writes the per-seat cube pickers into `<!--CUBE_PICKERS-->` (none for a one-cube save).
+  `build_save(..., table=FOUR)` makes the four-player save: four hand zones, the cube at x 0, `SEATS_JSON`,
+  `zones.layout_for(38)`. `global_xml(mats, cubes, colors)` repeats every `<!--SEAT-->`…`<!--/SEAT-->`
+  block of ui.xml per seat (`{seat}` = its color); the pickers are per seat too. The script always holds
+  both engines (`draft_core.lua`, `queue_draft.lua`, then `table.lua`).
 - `tokens.py` — tokens from the curated `data/tokens.csv` (one row per token; "Made by" lists cube
   card names separated by `;`, DFCs as "Front // Back"). `match_makers` links them to the cards of
   every cube by name → card id (one card can have a different id per cube's printing); the build prints
@@ -110,19 +120,24 @@ pick one at the table before the draft. Two halves:
   Pictures in the repo's `playmats/` folder are added after the themes (`fit_image`: whole picture,
   centred, padded with its edge colour; name from the file name). `with_zones` paints the zone board's
   art onto every mat where the board lies (the mat covered the column the table paints there; a mat image
-  is drawn as its owner sees it, top toward the middle). Saved to `sheets/mat??-<hash>.jpg`
+  is drawn as its owner sees it, top toward the middle). `render_narrow` draws the same mats 38 wide for the
+  four-player table (themes keep the centre of their art, pictures are fitted again; `sheets/mat38w??`), sharing
+  the 1v1 thumbnails. Saved to `sheets/mat??-<hash>.jpg`
   plus `matthumb??` thumbnails (plain art, no zones); names/URLs reach the script as `MATS_JSON`; thumbnails are save-level
   `CustomUIAssets` (`matthumb<i>`) used by the pickers that `mat_pickers` writes into `<!--MAT_PICKERS-->`.
 - `zones.py` — the zone board (borrowed from the MTG EDH table): `LAYOUT` (owner-relative `u` across,
   `d` from the middle line) holds the board, its Library / Graveyard / Exile slots, the Draw / Untap
   button strips, the Scry / Surveil / Mulligan buttons beside it (`SIDE_U`), the scry look row (`LOOK`),
-  the sideboard spot and the dice; `render_board` draws the image from it
+  the sideboard spot and the dice; `layout_for(mat_w)` moves the board to a narrower mat's right edge and,
+  with no room beside that mat, puts the sideboard pile and dice just past its hand-side edge (d 19.6);
+  `render_board` draws the image from it
   (`sheets/zones-<hash>.jpg`) and the same numbers reach the script as `ZONES_JSON` (with the image `url`).
 - `tabletop.py` — the table top, a 1v1 take on the MTG EDH table: grey wood grain, one wide dark
   mat per player (`PANEL_W` 62 x 16, the 44-wide playmat lies over its middle) in a light wood frame with
   a plain gold trim (no title or logo), and the zone board's art painted where the board lies in a game.
   `TABLE_W` x `TABLE_H` (88.4 x 52.2) is the area TTS's custom rectangle table stretches the image over
   (measured in TTS); Red's half is White's panel turned 180 degrees. Saved as `sheets/table-<hash>.jpg`.
+  `render_table(FOUR)` paints four 43-wide panels, one per quarter (`sheets/table4p-<hash>.jpg`).
 - `props.py` — table props from the MTG EDH mod (Workshop 2425949312), at their EDH spots on the
   custom table's wooden ends: mana counters, keyword markers and counter-token bags (left), d20/d10/d6
   and coin bags, the emblem deck, an extra-cards deck (Monarch, Day // Night, Initiative…) and the
@@ -137,7 +152,9 @@ pick one at the table before the draft. Two halves:
   counters. Our scripts only act on cards, so the props never interfere.
 - `live.py` — `uv run draft-duel-live exec "<lua>"` / `load`: tests in the running game through TTS's
   external-editor API (localhost:39999/39998), no screen needed (see verified-behaviours).
-- `cli.py` — orchestrates; writes `dist/Draft Duel.json`, copies into the TTS Saves
+- `cli.py` — orchestrates; writes `dist/Draft Duel.json` and `dist/Draft Duel 4P.json` (`render_all` →
+  `Rendered`: both tables' images and mats; it deletes every other image in `sheets/`, so one run must
+  render everything both saves use), copies them into the TTS Saves
   folder when it exists, `--push` commits `sheets/` so raw.githubusercontent.com URLs resolve. Without
   `--push` the build warns about every `sheets/` image `origin/<branch>` lacks (`unpublished_sheets`):
   TTS shows a missing sheet as blank white cards ("unsupported format: UNKNOWN" in the log).
@@ -147,7 +164,23 @@ pick one at the table before the draft. Two halves:
 - `draft_core.lua` — pure rules engine (no TTS API). Per pack, starter S / other O:
   S picks, O picks, O picks, S picks — each from 5 cards (`PACK_SIZE`, topped up from the cube), then
   the 4 leftovers are discarded (the table destroys them: undrafted cards simply vanish). Starter alternates; 24 packs → 48 picks each (192 cards dealt).
-- `table.lua` — TTS adapter. Per side, from the middle out: the cube in the middle strip, the pack row
+- `queue_draft.lua` — the four-player rules engine (`QueueDraft`). Everyone opens a 16-card pack, takes 2
+  (two separate picks; the turn ends on the second) and passes the rest to the back of the next seat's
+  queue; a seat always picks from the front of its own queue, so fast drafters work ahead and packs pile
+  up in front of a slow one. A pack goes round until empty (8 turns, two laps), so nothing is discarded.
+  3 rounds (left, right, left); a seat opens its next pack as soon as it has taken its 8 turns of the round,
+  without waiting for the table. 4 x 3 x 16 = 192 cards, 48 picks each. Both engines share the adapter's
+  interface: `currentPack`, `queuedPacks`, `turnKey`, `canPick`, `pickers`, `addToPack(id, packId)`, and
+  `pick` returning actions (`deal` with a `pack` id, `pick` with `turnOver`, `pass`, `finished`).
+- `table.lua` — TTS adapter. Seats come from `SEATS_JSON` (default: the 1v1 table): `COLORS` (passing
+  order), `SEAT_X`, `SEAT_SIDE`, `PLAYERS`; every placement goes through owner-relative helpers (`ownerU`,
+  `worldX`, `seatPoint`) and `seatAt(p)` (whose part of the table a point is in, replacing the old z-sign
+  checks), so the same code serves both tables. § four players overrides the sizes that must fit a quarter
+  (pack 8 x 2 at 1.1x, queue stacks at `QUEUE_U`, deck columns u -15.8..15.8, tokens, cube parking).
+  `layoutPack(color)` lays out a seat's current pack once per turn (`turnKey`: cards stay put between a
+  seat's two picks), adds Draft buttons (`pickable`), and stacks queued packs face-down to its right;
+  `runActions` re-lays only the seats an action touched; every bot with a pick waiting is scheduled
+  (`botWaiting`). Per side, from the middle out: the cube in the middle strip, the pack row
   (current pack: 5 cards at 1.5x, side by side, locked, with an on-card **Draft** button and a
   right-click "Draft this card"), then the 12x4 pick grid (0.65x). Bots draft for seats empty at
   Start Draft. State persists via `onSave`/`onLoad` (buttons, menus and visibility are reapplied).

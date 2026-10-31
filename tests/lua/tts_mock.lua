@@ -76,9 +76,9 @@ function Mock.newDeck(guid, count)
   return d
 end
 
-function Mock.newHand(guid, color, z, yaw)
+function Mock.newHand(guid, color, z, yaw, x)
   local h = Mock.newObject(guid, "Hand")
-  h.pos = { x = 0, y = 4, z = z }
+  h.pos = { x = x or 0, y = 4, z = z }
   h.rot = { x = 0, y = yaw, z = 0 }
   h.color = color
   return h
@@ -115,6 +115,21 @@ function Mock.setup(cubeSize)
   Mock.newHand("a00001", "White", -19, 0)
   Mock.newHand("a00002", "Red", 19, 180)
   Player = { White = makePlayer("White", "a00001"), Red = makePlayer("Red", "a00002") }
+end
+
+-- The four-player table (seats.FOUR): White and Red at -z, Green and Blue at +z.
+function Mock.setupFour(cubeSize)
+  Mock.setup(cubeSize)
+  Mock.objects.a00001 = nil
+  Mock.objects.a00002 = nil
+  Mock.objects.c00001.pos = { x = 0, y = 2.01, z = 0 }
+  local seats = { { "White", "a00001", 22.1, -23.5, 0 }, { "Red", "a00002", -22.1, -23.5, 0 },
+                  { "Green", "a00003", -22.1, 23.5, 180 }, { "Blue", "a00004", 22.1, 23.5, 180 } }
+  Player = {}
+  for _, s in ipairs(seats) do
+    Mock.newHand(s[2], s[1], s[4], s[5], s[3])
+    Player[s[1]] = makePlayer(s[1], s[2])
+  end
 end
 
 -- Runs queued waits in time order (Mock.now is the simulated clock, in seconds).

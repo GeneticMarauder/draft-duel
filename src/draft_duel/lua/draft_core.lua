@@ -11,7 +11,7 @@
 -- The engine returns "actions" for the table adapter to perform:
 --   {type="deal",    to=color, count=n}
 --   {type="pass",    from=color, to=color, cards={id,...}}
---   {type="pick",    color=color, card=id, slot=n}
+--   {type="pick",    color=color, card=id, slot=n, turnOver=true}
 --   {type="discard", cards={id,...}}
 --   {type="finished"}
 
@@ -62,12 +62,38 @@ function DraftCore:inPack(id)
   return false
 end
 
+-- The interface the table adapter shares with QueueDraft (queue_draft.lua):
+-- the pack a seat is picking from, packs waiting behind it (none here), a key
+-- that changes every turn, whether the seat can pick now, and who can.
+function DraftCore:currentPack(color)
+  if self:picker() == color then return self.pack end
+  return nil
+end
+
+function DraftCore:queuedPacks(color)
+  return {}
+end
+
+function DraftCore:turnKey(color)
+  return self.packNumber .. ":" .. self.step
+end
+
+function DraftCore:canPick(color)
+  return self:picker() == color and #self.pack >= DraftCore.PACK_SIZE
+end
+
+function DraftCore:pickers()
+  local p = self:picker()
+  if p then return { p } end
+  return {}
+end
+
 function DraftCore:pickCount(color)
   return #self.picks[color]
 end
 
--- The table adapter calls this for every card it deals into the pack.
-function DraftCore:addToPack(id)
+-- The table adapter calls this for every card it deals into the pack (one pack: no pack id needed).
+function DraftCore:addToPack(id, packId)
   table.insert(self.pack, id)
 end
 
@@ -103,7 +129,7 @@ function DraftCore:pick(color, id)
   table.insert(self.picks[color], id)
 
   local actions = {
-    { type = "pick", color = color, card = id, slot = #self.picks[color] },
+    { type = "pick", color = color, card = id, slot = #self.picks[color], turnOver = true },
   }
   local S = self:starter()
   local O = self:other(S)
