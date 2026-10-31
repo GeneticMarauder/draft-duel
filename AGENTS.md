@@ -108,8 +108,10 @@ pick one at the table before the draft. Two halves:
 - `playmats.py` — `THEMES`: twelve playmats drawn procedurally with Pillow (seeded, so identical pixels
   and hashed names every build; no copyrighted art). `MAT_SIZE` 2048x744 matches the 44x16 in-game mat.
   Pictures in the repo's `playmats/` folder are added after the themes (`fit_image`: whole picture,
-  centred, padded with its edge colour; name from the file name). Saved to `sheets/mat??-<hash>.jpg`
-  plus `matthumb??` thumbnails; names/URLs reach the script as `MATS_JSON`; thumbnails are save-level
+  centred, padded with its edge colour; name from the file name). `with_zones` paints the zone board's
+  art onto every mat where the board lies (the mat covered the column the table paints there; a mat image
+  is drawn as its owner sees it, top toward the middle). Saved to `sheets/mat??-<hash>.jpg`
+  plus `matthumb??` thumbnails (plain art, no zones); names/URLs reach the script as `MATS_JSON`; thumbnails are save-level
   `CustomUIAssets` (`matthumb<i>`) used by the pickers that `mat_pickers` writes into `<!--MAT_PICKERS-->`.
 - `zones.py` — the zone board (borrowed from the MTG EDH table): `LAYOUT` (owner-relative `u` across,
   `d` from the middle line) holds the board, its Library / Graveyard / Exile slots, the Draw / Untap

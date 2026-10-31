@@ -192,6 +192,39 @@ def test_playmats_render_distinct_images_of_the_mat_shape(tmp_path: Path) -> Non
     assert all(n.isprintable() and not any(c in n for c in '<>&"') for n in names)
 
 
+def test_playmats_show_the_zone_board_where_it_lies(tmp_path: Path) -> None:
+    # Seen in TTS: a mat covered the Library / Graveyard / Exile column painted on the table under it.
+    import re
+
+    import pytest
+
+    from draft_duel import playmats, zones
+
+    lua = (Path(__file__).parents[1] / "src/draft_duel/lua/table.lua").read_text()
+    assert float(re.search(r"^MAT_D = ([\d.]+)", lua, re.M).group(1)) == playmats.MAT_UNITS[1]
+    assert float(re.search(r"^MAT_Z = ([\d.]+)", lua, re.M).group(1)) == playmats.MAT_MID
+    assert playmats.MAT_UNITS[0] / playmats.MAT_UNITS[1] == pytest.approx(playmats.W / playmats.H, rel=0.01)
+
+    plain = Image.new("RGB", playmats.MAT_SIZE, (200, 0, 0))
+    mat = playmats.with_zones(plain)
+    px = playmats.W / playmats.MAT_UNITS[0]
+    b = zones.BOARD
+
+    def at(u: float, d: float) -> tuple[int, int]:
+        return round((u + playmats.MAT_UNITS[0] / 2) * px), round((d - playmats.MAT_MID + playmats.MAT_UNITS[1] / 2) * px)
+
+    for slot in zones.SLOTS.values():  # each slot's centre is painted (not the red art)
+        assert mat.getpixel(at(b["u"], slot["d"])) != (200, 0, 0)
+    assert mat.getpixel(at(b["u"] - b["w"] / 2 - 0.3, b["d"])) == (200, 0, 0), "the art left of the board is kept"
+    assert mat.getpixel(at(0, 9.5)) == (200, 0, 0)
+
+    written = playmats.render_all(tmp_path)
+    with Image.open(tmp_path / written[0][1]) as img, Image.open(tmp_path / written[0][2]) as thumb:
+        board_px = img.convert("RGB").getpixel(at(b["u"], zones.SLOTS["exile"]["d"]))
+        assert board_px == pytest.approx(mat.getpixel(at(b["u"], zones.SLOTS["exile"]["d"])), abs=12), "saved mats carry it"
+        assert thumb.size == playmats.THUMB_SIZE
+
+
 def test_playmats_reach_the_script_and_the_dropdowns() -> None:
     import json
 

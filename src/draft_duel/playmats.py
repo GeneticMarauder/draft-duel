@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageStat
 
+from draft_duel import zones
 from draft_duel.sheets import save_hashed
 
 # Matches the in-game mat (44 x 16 table units over each player's battlefield).
@@ -358,9 +359,29 @@ def custom_mats(folder: Path | None) -> list[tuple[str, Path]]:
     return out
 
 
+MAT_UNITS = (44.0, 16.0)  # the in-game mat in table units (table.lua MAT_D; the width follows MAT_SIZE)
+MAT_MID = 9.5             # its centre's distance from the middle line (table.lua MAT_Z)
+
+
+def with_zones(img: Image.Image) -> Image.Image:
+    """The mat with the zone board's art painted where the board lies, as on the table under it.
+
+    A mat image is drawn as its owner sees it (top toward the middle line), like the table's panels.
+    """
+    b = zones.BOARD
+    px = W / MAT_UNITS[0]
+    board = zones.render_board().resize((round(b["w"] * px), round(b["h"] * px)), Image.LANCZOS)
+    left = round((b["u"] - b["w"] / 2 + MAT_UNITS[0] / 2) * px)
+    top = round((b["d"] - b["h"] / 2 - (MAT_MID - MAT_UNITS[1] / 2)) * px)
+    out = img.copy()
+    out.paste(board, (left, top))
+    return out
+
+
 def render_all(out_dir: Path, custom_dir: Path | None = None) -> list[tuple[str, str, str]]:
     """Writes every playmat (themes, then pictures from ``custom_dir``) and a thumbnail as hashed JPEGs.
 
+    The mats carry the zone board's art (``with_zones``); the picker's thumbnails show the plain art.
     Returns ``(name, mat filename, thumbnail filename)`` in picker order.
     """
     images = [(name, lambda n=name: render(n)) for name in THEMES]
@@ -368,7 +389,7 @@ def render_all(out_dir: Path, custom_dir: Path | None = None) -> list[tuple[str,
     out = []
     for i, (name, draw) in enumerate(images, 1):
         img = draw()
-        mat = save_hashed(img, out_dir, f"mat{i:02d}")
+        mat = save_hashed(with_zones(img), out_dir, f"mat{i:02d}")
         thumb = save_hashed(img.resize(THUMB_SIZE, Image.LANCZOS), out_dir, f"matthumb{i:02d}")
         out.append((name, mat, thumb))
     return out
